@@ -25,13 +25,13 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - Document how to verify the OCI artifact using `oras pull` and `gh attestation verify`
     - _Requirements: 8.3_
 
-- [ ] 2. Copy caller module and create Rust project
-  - [ ] 2.1 Copy `call_remote_executor` module to `.github/scripts/call_remote_executor/`
+- [x] 2. Copy caller module and create Rust project
+  - [x] 2.1 Copy `call_remote_executor` module to `.github/scripts/call_remote_executor/`
     - Copy all Python files from `github-runner-ec2-attestation-caller/.github/scripts/call_remote_executor/`
     - Files: `__init__.py`, `__main__.py`, `cli.py`, `caller.py`, `encryption.py`, `attestation.py`, `artifact.py`, `errors.py`
     - _Requirements: 3.7_
 
-  - [ ] 2.2 Create Rust project structure at `rust-project/`
+  - [x] 2.2 Create Rust project structure at `rust-project/`
     - Create `rust-project/Cargo.toml` with binary target named `attested-hello`
     - Create `rust-project/src/main.rs` that prints a version string and build timestamp
     - _Requirements: 1.1, 1.2, 1.3, 1.4_

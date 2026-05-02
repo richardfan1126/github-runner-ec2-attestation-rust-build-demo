@@ -1,0 +1,9 @@
+[package]
+name = "attested-hello"
+version = "0.1.0"
+edition = "2021"
+description = "A minimal Rust binary built inside an attested AWS Nitro Enclave environment"
+
+[[bin]]
+name = "attested-hello"
+path = "src/main.rs"
