@@ -79,8 +79,8 @@ sequenceDiagram
     CALLER->>RE: GET /attest?nonce=N1
     RE-->>CALLER: attestation_document + server_public_key
     CALLER->>CALLER: Validate attestation, derive shared key
-    CALLER->>RE: POST /execute (encrypted payload with github_token)
-    RE->>BS: Clone repo, run build-rust.sh
+    CALLER->>RE: POST /execute (encrypted payload with github_token + script_env)
+    RE->>BS: Clone repo, inject script_env as container env vars, run build-rust.sh
     BS->>BS: Install Rust, cargo build --release
     BS->>BS: Compute SHA-256 of binary
     BS->>ART: Upload binary via Artifacts API (using github_token)
@@ -117,11 +117,13 @@ Shell script executed by the Remote Executor inside the enclave.
 
 **Inputs (environment):**
 - Working directory: repository root (cloned by Remote Executor)
-- `GITHUB_TOKEN` — passed via the encrypted execution payload as `github_token`
-- `GITHUB_RUN_ID` — the workflow run ID (passed via environment or extracted)
-- `GITHUB_REPOSITORY` — the repository slug (passed via environment or extracted)
-- `ACTIONS_RUNTIME_TOKEN` — runtime token for the v3 pipeline artifacts REST API
-- `ACTIONS_RUNTIME_URL` — base URL for the Actions runtime API
+- `GITHUB_TOKEN` — passed via the encrypted execution payload's `script_env` dictionary
+- `GITHUB_RUN_ID` — the workflow run ID, passed via the encrypted execution payload's `script_env` dictionary
+- `GITHUB_REPOSITORY` — the repository slug, passed via the encrypted execution payload's `script_env` dictionary
+- `ACTIONS_RUNTIME_TOKEN` — runtime token for the v3 pipeline artifacts REST API, passed via the encrypted execution payload's `script_env` dictionary
+- `ACTIONS_RUNTIME_URL` — base URL for the Actions runtime API, passed via the encrypted execution payload's `script_env` dictionary
+
+**Note on environment variable forwarding:** All five environment variables are forwarded from the GitHub Actions runner to the Execution_Container via the `script_env` field in the encrypted /execute payload. The caller module includes them in the `script_env` dictionary, the Remote Executor server extracts and sanitizes the dictionary, and the Script_Executor injects them as container environment variables. This is necessary because the Execution_Container runs in an isolated Docker environment with no access to the GitHub Actions runner's environment.
 
 **Note on Artifacts API version:** The build script uses the v3 pipeline artifacts REST API (`_apis/pipelines/workflows/{run_id}/artifacts`) because the enclave environment only has `curl` available — the v4 API requires the `@actions/artifact` Node.js package. The v3 API is deprecated but remains functional and is the only practical option for uploading artifacts from non-runner environments. The workflow-side download uses `actions/download-artifact@v4`, which is backward-compatible with v3-uploaded artifacts.
 
@@ -152,7 +154,7 @@ Copied from `github-runner-ec2-attestation-caller`. This is the Python package t
 **Files (copied as-is):**
 - `__init__.py`, `__main__.py`, `cli.py`, `caller.py`, `encryption.py`, `attestation.py`, `artifact.py`, `errors.py`
 
-**Interface:** Invoked as `python .github/scripts/call_remote_executor --server-url ... --script-path ... --github-token ... --root-cert-pem ... --expected-pcrs ... --attestation-output-dir attestation-documents`
+**Interface:** Invoked as `python .github/scripts/call_remote_executor --server-url ... --script-path ... --github-token ... --root-cert-pem ... --expected-pcrs ... --attestation-output-dir attestation-documents --script-env GITHUB_RUN_ID=... --script-env GITHUB_REPOSITORY=... --script-env ACTIONS_RUNTIME_TOKEN=... --script-env ACTIONS_RUNTIME_URL=...`
 
 **Outputs:**
 - Exit code (0 = success)

@@ -138,3 +138,15 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 3. THE GitHub_Attestation SHALL bind the OCI_Artifact digest to the GitHub Actions workflow run, repository, and commit SHA.
 4. WHEN the GitHub_Attestation step completes successfully, THE Workflow SHALL print a confirmation message to the GitHub Actions job summary indicating the attestation was created.
 5. IF the GitHub_Attestation step fails, THEN THE Workflow SHALL use `continue-on-error: true` on the `actions/attest@v4` step and a subsequent step SHALL check the step outcome (`steps.<id>.outcome == 'failure'`) to emit a `::warning::` annotation and print a warning to the job summary, without failing the overall job.
+
+### Requirement 10: Script Environment Variable Forwarding
+
+**User Story:** As a developer, I want the GitHub Actions runtime environment variables forwarded to the build script running inside the Remote Executor's Execution_Container, so that the build script can upload artifacts to GitHub Actions Artifacts and interact with GitHub APIs.
+
+#### Acceptance Criteria
+
+1. THE Caller module SHALL accept a `--script-env` CLI argument that can be specified multiple times, each providing a `KEY=VALUE` pair to forward as an environment variable to the Execution_Container.
+2. THE Caller module SHALL include the collected `script_env` dictionary in the encrypted /execute payload alongside the existing fields (repository_url, commit_hash, script_path, github_token, oidc_token, nonce).
+3. THE Workflow SHALL pass `GITHUB_TOKEN`, `GITHUB_RUN_ID`, `GITHUB_REPOSITORY`, `ACTIONS_RUNTIME_TOKEN`, and `ACTIONS_RUNTIME_URL` to the Caller via `--script-env` arguments so they are forwarded to the Execution_Container.
+4. THE Build_Script SHALL receive these environment variables as container environment variables and use them for Rust toolchain installation, artifact upload, and GitHub API interactions.
+5. IF any required environment variable (`GITHUB_TOKEN`, `GITHUB_RUN_ID`, `GITHUB_REPOSITORY`, `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_RUNTIME_URL`) is not set in the Execution_Container, THEN THE Build_Script SHALL exit with a non-zero exit code and a descriptive error message.
