@@ -150,11 +150,11 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - Include provenance manifest in the upload
     - _Requirements: 7.1, 7.2, 7.3, 3.9_
 
-- [ ] 7. Checkpoint - Ensure all tests pass
+- [x] 7. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 8. Write smoke tests for static configuration
-  - [ ] 8.1 Write smoke tests for workflow YAML and project configuration
+- [x] 8. Write smoke tests for static configuration
+  - [x] 8.1 Write smoke tests for workflow YAML and project configuration
     - Test `test_workflow_yaml_inputs` — verify workflow_dispatch inputs in YAML
     - Test `test_workflow_yaml_permissions` — verify permissions in YAML
     - Test `test_workflow_yaml_root_cert` — verify ROOT_CERT_PEM env var in YAML
@@ -164,7 +164,7 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - Test `test_gitignore_patterns` — verify .gitignore has required patterns
     - _Requirements: 1.1, 3.1, 3.2, 8.1, 8.2, 8.4, 8.5_
 
-- [ ] 9. Final checkpoint - Ensure all tests pass
+- [x] 9. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
