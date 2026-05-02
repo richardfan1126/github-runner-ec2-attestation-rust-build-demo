@@ -47,45 +47,45 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - Handle errors with descriptive stderr messages and non-zero exit codes
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 4.1, 4.2, 4.3_
 
-- [ ] 4. Implement workflow helper scripts and parsing logic
-  - [ ] 4.1 Create `scripts/parse_markers.py` — Python module for parsing stdout markers
+- [x] 4. Implement workflow helper scripts and parsing logic
+  - [x] 4.1 Create `scripts/parse_markers.py` — Python module for parsing stdout markers
     - Implement `parse_sha256_marker(stdout: str) -> str` that extracts `BINARY_SHA256:<value>`
     - Implement `parse_artifact_name_marker(stdout: str) -> str` that extracts `BINARY_ARTIFACT_NAME:<value>`
     - Raise descriptive errors when markers are missing or malformed
     - _Requirements: 4.4, 4.8_
 
-  - [ ] 4.2 Create `scripts/validate_allowlist.py` — Python module for server URL allowlist validation
+  - [x] 4.2 Create `scripts/validate_allowlist.py` — Python module for server URL allowlist validation
     - Implement `validate_server_url(server_url: str, allowlist: str) -> bool`
     - Accept URL if allowlist is empty; reject if URL not in comma-separated list (after trimming)
     - _Requirements: 3.4_
 
-  - [ ] 4.3 Create `scripts/create_provenance.py` — Python module for provenance manifest generation
+  - [x] 4.3 Create `scripts/create_provenance.py` — Python module for provenance manifest generation
     - Implement `create_provenance_manifest(binary_name, sha256, repo_url, commit_hash, run_id, timestamp) -> dict`
     - Return JSON-serializable dict matching the provenance manifest schema from the design
     - _Requirements: 5.2_
 
-  - [ ] 4.4 Write property test for stdout marker round-trip (Property 1)
+  - [x] 4.4 Write property test for stdout marker round-trip (Property 1)
     - **Property 1: Stdout marker round-trip**
     - For any valid marker value, embedding it in arbitrary stdout text and parsing back SHALL return the original value
     - Use Hypothesis to generate random marker values and surrounding text
     - Minimum 100 examples via `@settings(max_examples=100)`
     - **Validates: Requirements 2.4, 2.5, 4.2, 4.3, 4.4**
 
-  - [ ] 4.5 Write property test for server URL allowlist validation (Property 2)
+  - [x] 4.5 Write property test for server URL allowlist validation (Property 2)
     - **Property 2: Server URL allowlist acceptance**
     - For any server URL and comma-separated allowlist, URL accepted iff it appears as exact match after trimming; empty allowlist accepts all
     - Use Hypothesis to generate random URLs and allowlists
     - Minimum 100 examples via `@settings(max_examples=100)`
     - **Validates: Requirements 3.4**
 
-  - [ ] 4.6 Write property test for provenance manifest completeness (Property 3)
+  - [x] 4.6 Write property test for provenance manifest completeness (Property 3)
     - **Property 3: Provenance manifest completeness**
     - For any valid build metadata inputs, the generated manifest SHALL contain all values in correct fields, and parsing back yields originals
     - Use Hypothesis to generate random build metadata
     - Minimum 100 examples via `@settings(max_examples=100)`
     - **Validates: Requirements 5.2**
 
-  - [ ] 4.7 Write unit tests for marker parsing, allowlist validation, and provenance manifest
+  - [x] 4.7 Write unit tests for marker parsing, allowlist validation, and provenance manifest
     - Test `test_parse_sha256_marker` — parse known BINARY_SHA256 marker from sample stdout
     - Test `test_parse_artifact_name_marker` — parse known BINARY_ARTIFACT_NAME marker
     - Test `test_missing_sha256_marker_raises` — error when marker missing
