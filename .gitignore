@@ -1,0 +1,17 @@
+# Rust
+target/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Virtual environments
+.venv/
+
+# Attestation output
+attestation-documents/
+
+# Testing
+.hypothesis/
+.pytest_cache/

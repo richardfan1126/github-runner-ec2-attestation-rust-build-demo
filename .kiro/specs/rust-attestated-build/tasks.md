@@ -6,20 +6,20 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
 
 ## Tasks
 
-- [ ] 1. Set up project structure and configuration files
-  - [ ] 1.1 Create `pyproject.toml` with caller dependencies and dev dependencies
+- [x] 1. Set up project structure and configuration files
+  - [x] 1.1 Create `pyproject.toml` with caller dependencies and dev dependencies
     - Declare dependencies: requests, cbor2, pycose, pyOpenSSL, pycryptodome, cryptography, wolfcrypt
     - Declare dev dependencies: hypothesis>=6.0.0, pytest>=7.0.0, pyyaml>=6.0.0
     - Configure hatch build to include `.github/scripts/call_remote_executor`
     - Configure pytest testpaths to `tests/`
     - _Requirements: 8.1_
 
-  - [ ] 1.2 Create `.gitignore` with required exclusion patterns
+  - [x] 1.2 Create `.gitignore` with required exclusion patterns
     - Exclude `target/`, `__pycache__/`, `.venv/`, `*.pyc`, `attestation-documents/`
     - Also exclude `.hypothesis/`, `.pytest_cache/`, `*.egg-info/`
     - _Requirements: 8.2_
 
-  - [ ] 1.3 Create `README.md` documenting the project
+  - [x] 1.3 Create `README.md` documenting the project
     - Document workflow inputs and how to trigger the workflow
     - Document the build-sign-upload pipeline flow
     - Document how to verify the OCI artifact using `oras pull` and `gh attestation verify`
