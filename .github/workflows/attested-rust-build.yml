@@ -1,0 +1,400 @@
+name: Attested Rust Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: "Base URL of the Remote Executor server"
+        required: true
+        type: string
+      script_path:
+        description: "Path to script in the repository to execute remotely"
+        required: false
+        default: "scripts/build-rust.sh"
+        type: string
+      commit_hash:
+        description: "Git commit SHA to execute (defaults to current SHA)"
+        required: false
+        default: ""
+        type: string
+      repository_url:
+        description: "Git repository URL to execute against (defaults to current repository)"
+        required: false
+        default: ""
+        type: string
+      audience:
+        description: "Audience value for OIDC token request (must match server's expected audience)"
+        required: false
+        default: ""
+        type: string
+      server_url_allowlist:
+        description: "Comma-separated list of permitted server URLs (leave empty to allow all)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+  packages: write
+  attestations: write
+
+env:
+  # AWS Nitro Attestation PKI root CA certificate (used by NitroTPM)
+  # Downloaded from https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip
+  # Fingerprint: 64:1A:03:21:A3:E2:44:EF:E4:56:46:31:95:D6:06:31:7E:D7:CD:CC:3C:17:56:E0:98:93:F3:C6:8F:79:BB:5B
+  ROOT_CERT_PEM: |
+    -----BEGIN CERTIFICATE-----
+    MIICETCCAZagAwIBAgIRAPkxdWgbkK/hHUbMtOTn+FYwCgYIKoZIzj0EAwMwSTEL
+    MAkGA1UEBhMCVVMxDzANBgNVBAoMBkFtYXpvbjEMMAoGA1UECwwDQVdTMRswGQYD
+    VQQDDBJhd3Mubml0cm8tZW5jbGF2ZXMwHhcNMTkxMDI4MTMyODA1WhcNNDkxMDI4
+    MTQyODA1WjBJMQswCQYDVQQGEwJVUzEPMA0GA1UECgwGQW1hem9uMQwwCgYDVQQL
+    DANBV1MxGzAZBgNVBAMMEmF3cy5uaXRyby1lbmNsYXZlczB2MBAGByqGSM49AgEG
+    BSuBBAAiA2IABPwCVOumCMHzaHDimtqQvkY4MpJzbolL//Zy2YlES1BR5TSksfbb
+    48C8WBoyt7F2Bw7eEtaaP+ohG2bnUs990d0JX28TcPQXCEPZ3BABIeTPYwEoCWZE
+    h8l5YoQwTcU/9KNCMEAwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUkCW1DdkF
+    R+eWw5b6cp3PmanfS5YwDgYDVR0PAQH/BAQDAgGGMAoGCCqGSM49BAMDA2kAMGYC
+    MQCjfy+Rocm9Xue4YnwWmNJVA44fA0P5W2OpYow9OYCVRaEevL8uO1XYru5xtMPW
+    rfMCMQCi85sWBbJwKKXdS6BptQFuZbT73o/gBh1qUxl/nNr12UO8Yfwr6wPLb+6N
+    IwLz3/Y=
+    -----END CERTIFICATE-----
+  # Expected PCR values for the attestable AMI (PCR4 and PCR7)
+  EXPECTED_PCRS: |
+    {
+      "4": "0da2290644d4f81ba67a4f563e5d68eeb61f1edf0cbc6e5ba7de0ea14e33c3400e51f898df4d675e97abc3a2dc4ed6cc",
+      "7": "98441c7f7625d10058c47683aec486ce311c633235eb555593a7ee791121e3578ae72d04ecef661f272d59058b77af35"
+    }
+
+jobs:
+  attested-rust-build:
+    runs-on: ubuntu-latest
+    steps:
+      # ------------------------------------------------------------------
+      # Step 1: Validate inputs
+      # ------------------------------------------------------------------
+      - name: Validate inputs
+        shell: bash
+        env:
+          SERVER_URL: ${{ inputs.server_url }}
+          SERVER_URL_ALLOWLIST: ${{ inputs.server_url_allowlist }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$SERVER_URL" ]; then
+            echo "::error::server_url input is required and cannot be empty"
+            exit 1
+          fi
+
+          # Validate server_url against allowlist when configured
+          if [ -n "$SERVER_URL_ALLOWLIST" ]; then
+            ALLOWED=false
+            IFS=',' read -ra URLS <<< "$SERVER_URL_ALLOWLIST"
+            for url in "${URLS[@]}"; do
+              trimmed="${url#"${url%%[![:space:]]*}"}"
+              trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+              if [ "$trimmed" = "$SERVER_URL" ]; then
+                ALLOWED=true
+                break
+              fi
+            done
+            if [ "$ALLOWED" = "false" ]; then
+              echo "::error::server_url '$SERVER_URL' is not in the configured server_url_allowlist"
+              exit 1
+            fi
+          fi
+
+      # ------------------------------------------------------------------
+      # Step 2: Checkout repository
+      # ------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_hash || github.sha }}
+
+      # ------------------------------------------------------------------
+      # Step 3: Set up Python
+      # ------------------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ------------------------------------------------------------------
+      # Step 4: Install dependencies
+      # ------------------------------------------------------------------
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install -e ".[dev]"
+
+      # ------------------------------------------------------------------
+      # Step 5: Run Remote Executor Caller
+      # ------------------------------------------------------------------
+      - name: Run Remote Executor Caller
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          python .github/scripts/call_remote_executor \
+            --server-url "${{ inputs.server_url }}" \
+            --script-path "${{ inputs.script_path || 'scripts/build-rust.sh' }}" \
+            --commit-hash "${{ inputs.commit_hash || github.sha }}" \
+            --repository-url "${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}" \
+            --github-token "$GITHUB_TOKEN" \
+            --root-cert-pem "$ROOT_CERT_PEM" \
+            --expected-pcrs "$EXPECTED_PCRS" \
+            --audience "${{ inputs.audience }}" \
+            --attestation-output-dir attestation-documents \
+            2>&1 | tee execution-output.txt
+
+      # ------------------------------------------------------------------
+      # Step 6: Parse stdout markers
+      # ------------------------------------------------------------------
+      - name: Parse stdout markers
+        id: parse_markers
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BINARY_SHA256=$(grep -oP '^BINARY_SHA256:\K[0-9a-fA-F]{64}$' execution-output.txt || true)
+          BINARY_ARTIFACT_NAME=$(grep -oP '^BINARY_ARTIFACT_NAME:\K.+$' execution-output.txt || true)
+
+          if [ -z "$BINARY_SHA256" ]; then
+            echo "::error::BINARY_SHA256 marker not found in execution output"
+            exit 1
+          fi
+
+          if [ -z "$BINARY_ARTIFACT_NAME" ]; then
+            echo "::error::BINARY_ARTIFACT_NAME marker not found in execution output"
+            exit 1
+          fi
+
+          echo "binary_sha256=${BINARY_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "binary_artifact_name=${BINARY_ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Found BINARY_SHA256: ${BINARY_SHA256}"
+          echo "Found BINARY_ARTIFACT_NAME: ${BINARY_ARTIFACT_NAME}"
+
+      # ------------------------------------------------------------------
+      # Step 7: Download binary artifact
+      # ------------------------------------------------------------------
+      - name: Download binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.parse_markers.outputs.binary_artifact_name }}
+          path: downloaded-binary/
+
+      # ------------------------------------------------------------------
+      # Step 8: Verify binary integrity
+      # ------------------------------------------------------------------
+      - name: Verify binary integrity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPECTED_SHA256="${{ steps.parse_markers.outputs.binary_sha256 }}"
+          BINARY_PATH="downloaded-binary/attested-hello"
+
+          if [ ! -f "$BINARY_PATH" ]; then
+            echo "::error::Downloaded binary not found at ${BINARY_PATH}"
+            exit 1
+          fi
+
+          ACTUAL_SHA256=$(sha256sum "$BINARY_PATH" | awk '{print $1}')
+
+          echo "Expected SHA-256: ${EXPECTED_SHA256}"
+          echo "Actual SHA-256:   ${ACTUAL_SHA256}"
+
+          if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+            echo "::error::Binary integrity check failed! Expected SHA-256 ${EXPECTED_SHA256} but got ${ACTUAL_SHA256}"
+            exit 1
+          fi
+
+          echo "Binary integrity verified."
+          chmod +x "$BINARY_PATH"
+
+      # ------------------------------------------------------------------
+      # Step 9: Create provenance manifest
+      # ------------------------------------------------------------------
+      - name: Create provenance manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMIT_HASH="${{ inputs.commit_hash || github.sha }}"
+          REPO_URL="${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}"
+
+          python3 -c "
+          import json, datetime
+          from scripts.create_provenance import create_provenance_manifest
+
+          manifest = create_provenance_manifest(
+              binary_name='attested-hello',
+              sha256='${{ steps.parse_markers.outputs.binary_sha256 }}',
+              repo_url='${REPO_URL}',
+              commit_hash='${COMMIT_HASH}',
+              run_id='${{ github.run_id }}',
+              timestamp=datetime.datetime.utcnow().isoformat() + 'Z',
+          )
+
+          with open('provenance-manifest.json', 'w') as f:
+              json.dump(manifest, f, indent=2)
+
+          print('Provenance manifest created.')
+          "
+
+      # ------------------------------------------------------------------
+      # Step 10: Package attestation bundle
+      # ------------------------------------------------------------------
+      - name: Package attestation bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf attestation-bundle.tar.gz -C attestation-documents .
+          echo "Attestation bundle packaged."
+
+      # ------------------------------------------------------------------
+      # Step 11: Install Oras CLI
+      # ------------------------------------------------------------------
+      - name: Install Oras CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ORAS_VERSION="1.2.0"
+          curl -fsSLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          tar -xzf "oras_${ORAS_VERSION}_linux_amd64.tar.gz" oras
+          sudo mv oras /usr/local/bin/oras
+          rm -f "oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          oras version
+
+      # ------------------------------------------------------------------
+      # Step 12: Login to GHCR
+      # ------------------------------------------------------------------
+      - name: Login to GHCR
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$GITHUB_TOKEN" | oras login ghcr.io --username "${{ github.actor }}" --password-stdin
+          echo "Logged in to GHCR."
+
+      # ------------------------------------------------------------------
+      # Step 13: Push OCI artifact to GHCR
+      # ------------------------------------------------------------------
+      - name: Push OCI artifact to GHCR
+        id: oras_push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMIT_HASH="${{ inputs.commit_hash || github.sha }}"
+          SHORT_SHA="${COMMIT_HASH:0:7}"
+          OCI_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}/attested-hello"
+          OCI_REF="${OCI_IMAGE}:${SHORT_SHA}"
+
+          echo "Pushing OCI artifact to ${OCI_REF}..."
+
+          PUSH_OUTPUT=$(oras push "$OCI_REF" \
+            "downloaded-binary/attested-hello:application/octet-stream" \
+            "attestation-bundle.tar.gz:application/vnd.attestation.bundle+tar.gz" \
+            "provenance-manifest.json:application/vnd.attestation.provenance+json" \
+            2>&1)
+
+          echo "$PUSH_OUTPUT"
+
+          # Extract the manifest digest from oras push output
+          MANIFEST_DIGEST=$(echo "$PUSH_OUTPUT" | grep -oP 'sha256:[0-9a-f]{64}' | tail -1)
+
+          if [ -z "$MANIFEST_DIGEST" ]; then
+            echo "::error::Failed to extract OCI manifest digest from oras push output"
+            exit 1
+          fi
+
+          echo "oci_image=${OCI_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "oci_ref=${OCI_REF}" >> "$GITHUB_OUTPUT"
+          echo "manifest_digest=${MANIFEST_DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+          echo "OCI artifact pushed: ${OCI_REF}"
+          echo "Manifest digest: ${MANIFEST_DIGEST}"
+
+      # ------------------------------------------------------------------
+      # Step 14: Create GitHub Attestation
+      # ------------------------------------------------------------------
+      - name: Create GitHub Attestation
+        id: attest
+        uses: actions/attest@v4
+        continue-on-error: true
+        with:
+          subject-name: ${{ steps.oras_push.outputs.oci_image }}
+          subject-digest: ${{ steps.oras_push.outputs.manifest_digest }}
+          push-to-registry: true
+
+      # ------------------------------------------------------------------
+      # Step 15: Check attestation outcome
+      # ------------------------------------------------------------------
+      - name: Check attestation outcome
+        shell: bash
+        if: steps.attest.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          echo "::warning::GitHub Attestation step failed. The OCI artifact was pushed successfully but the Sigstore attestation could not be created."
+          echo "## ⚠️ GitHub Attestation Warning" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The GitHub Attestation step failed. The OCI artifact was pushed successfully to GHCR, but the Sigstore-based provenance attestation could not be created." >> "$GITHUB_STEP_SUMMARY"
+          echo "The Nitro attestation bundle is still available as part of the OCI artifact layers." >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------------
+      # Step 16: Print job summary
+      # ------------------------------------------------------------------
+      - name: Print job summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OCI_REF="${{ steps.oras_push.outputs.oci_ref }}"
+          MANIFEST_DIGEST="${{ steps.oras_push.outputs.manifest_digest }}"
+          ATTEST_OUTCOME="${{ steps.attest.outcome }}"
+
+          if [ "$ATTEST_OUTCOME" = "success" ]; then
+            ATTEST_STATUS="✅ Created"
+          else
+            ATTEST_STATUS="⚠️ Failed (non-blocking)"
+          fi
+
+          echo "## Attested Rust Build Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **OCI Reference** | \`${OCI_REF}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Manifest Digest** | \`${MANIFEST_DIGEST}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **GitHub Attestation** | ${ATTEST_STATUS} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Binary SHA-256** | \`${{ steps.parse_markers.outputs.binary_sha256 }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------------
+      # Step 17: Copy provenance manifest into attestation-documents
+      # ------------------------------------------------------------------
+      - name: Copy provenance manifest to attestation documents
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -d "attestation-documents" ] && [ -f "provenance-manifest.json" ]; then
+            cp provenance-manifest.json attestation-documents/provenance-manifest.json
+            echo "Provenance manifest copied to attestation-documents/."
+          fi
+
+      # ------------------------------------------------------------------
+      # Step 18: Upload attestation documents artifact
+      # ------------------------------------------------------------------
+      - name: Upload attestation documents
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: attestation-documents
+          path: attestation-documents/
+          if-no-files-found: ignore
