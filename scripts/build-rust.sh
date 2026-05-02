@@ -2,8 +2,13 @@
 # build-rust.sh — Build script executed by the Remote Executor inside the enclave.
 #
 # Installs the Rust toolchain, compiles the attested-hello binary, computes its
-# SHA-256 digest, uploads it to GitHub Actions Artifacts via the v4 API, and
-# prints stdout markers consumed by the workflow.
+# SHA-256 digest, uploads it to GitHub Actions Artifacts via the v3 pipeline
+# artifacts REST API, and prints stdout markers consumed by the workflow.
+#
+# Note: Uses the v3 API because the enclave environment only has curl available
+# (the v4 API requires the @actions/artifact Node.js package). The v3 API is
+# deprecated but remains functional and is the only option for non-runner
+# environments.
 #
 # Required environment variables:
 #   GITHUB_TOKEN            — GitHub token passed via the encrypted execution payload
@@ -95,11 +100,11 @@ fi
 echo "SHA-256: ${BINARY_SHA256}" >&2
 
 # ---------------------------------------------------------------------------
-# Step 5: Upload binary to GitHub Actions Artifacts (v4 API)
+# Step 5: Upload binary to GitHub Actions Artifacts (v3 pipeline artifacts REST API)
 #
-# The v4 Artifacts API flow:
-#   1. POST to create an artifact → get signed_upload_url
-#   2. PUT the zip file to the signed_upload_url
+# The v3 pipeline artifacts API flow:
+#   1. POST to create an artifact → get fileContainerResourceUrl
+#   2. PUT the file to the fileContainerResourceUrl
 #   3. PATCH to finalize the artifact
 # ---------------------------------------------------------------------------
 echo "=== Uploading binary to GitHub Actions Artifacts ===" >&2

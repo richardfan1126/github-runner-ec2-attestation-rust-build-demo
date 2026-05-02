@@ -18,8 +18,8 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 - **OCI_Artifact**: An artifact stored in an OCI registry, consisting of the Binary_Artifact and its associated Attestation_Document as layers or annotations.
 - **Rust_Project**: A minimal Rust project (Cargo.toml and source files) that compiles into the Binary_Artifact.
 - **Attestation_Bundle**: A directory containing the server-identity, execution-acceptance, and output-integrity attestation documents and their manifest, produced by the Caller during execution.
-- **Temporary_Store**: GitHub Actions Artifacts, used to transfer the Binary_Artifact out of the attested environment. The Remote_Executor uses the `github_token` (received in the encrypted execution payload) to upload artifacts via the GitHub Actions Artifacts API, and the Workflow downloads them using the `actions/download-artifact` action.
-- **GitHub_Attestation**: A Sigstore-based attestation created by `gh attestation` that binds a build artifact to the GitHub Actions workflow run, providing supply-chain provenance via GitHub's artifact attestation feature.
+- **Temporary_Store**: GitHub Actions Artifacts, used to transfer the Binary_Artifact out of the attested environment. The Remote_Executor uses the `github_token` (received in the encrypted execution payload) to upload artifacts via the GitHub Actions Artifacts v3 pipeline REST API (the only option available in the enclave's curl-only environment), and the Workflow downloads them using the `actions/download-artifact@v4` action.
+- **GitHub_Attestation**: A Sigstore-based attestation created by the `actions/attest@v4` GitHub Action that binds a build artifact to the GitHub Actions workflow run, providing supply-chain provenance via GitHub's artifact attestation feature. Verified by consumers using `gh attestation verify`.
 
 ## Requirements
 
@@ -75,7 +75,7 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 2. THE Build_Script SHALL print the artifact name to stdout in the format `BINARY_ARTIFACT_NAME:<name>`.
 3. THE Build_Script SHALL print the SHA-256 digest of the Binary_Artifact to stdout in the format `BINARY_SHA256:<hex_digest>`.
 4. WHEN the Caller completes successfully, THE Workflow SHALL parse the execution stdout to extract the `BINARY_ARTIFACT_NAME` and `BINARY_SHA256` values.
-5. THE Workflow SHALL download the Binary_Artifact from GitHub Actions Artifacts using the `actions/download-artifact` action with the extracted artifact name.
+5. THE Workflow SHALL download the Binary_Artifact from GitHub Actions Artifacts using the `actions/download-artifact@v4` action with the extracted artifact name.
 6. THE Workflow SHALL compute a SHA-256 digest of the downloaded Binary_Artifact and verify it matches the `BINARY_SHA256` value from the build output.
 7. IF the SHA-256 digest of the downloaded Binary_Artifact does not match the `BINARY_SHA256` value, THEN THE Workflow SHALL fail with a descriptive integrity mismatch error.
 8. IF the `BINARY_ARTIFACT_NAME` or `BINARY_SHA256` markers are missing from the execution stdout, THEN THE Workflow SHALL fail with a descriptive error message.
@@ -133,8 +133,8 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 
 #### Acceptance Criteria
 
-1. WHEN the Oras upload to GHCR succeeds, THE Workflow SHALL run `gh attestation create` (or the `actions/attest` action) against the uploaded OCI_Artifact to generate a Sigstore-based provenance attestation.
-2. THE Workflow SHALL use the `id-token: write` and `attestations: write` permissions required by the GitHub Attestation feature.
+1. WHEN the Oras upload to GHCR succeeds, THE Workflow SHALL use the `actions/attest@v4` GitHub Action with `subject-name` set to the fully-qualified OCI image name (without tag) and `subject-digest` set to the OCI manifest digest (in `sha256:<hex>` format) to generate a Sigstore-based provenance attestation. The action SHALL be configured with `push-to-registry: true` to attach the attestation to the OCI artifact in GHCR.
+2. THE Workflow SHALL use the `id-token: write` and `attestations: write` permissions required by the `actions/attest@v4` action.
 3. THE GitHub_Attestation SHALL bind the OCI_Artifact digest to the GitHub Actions workflow run, repository, and commit SHA.
-4. WHEN the GitHub_Attestation step completes, THE Workflow SHALL print a confirmation message to the GitHub Actions job summary indicating the attestation was created.
-5. IF the GitHub_Attestation step fails, THEN THE Workflow SHALL print a warning but not fail the overall job, since the OCI_Artifact and Nitro attestation bundle are already uploaded.
+4. WHEN the GitHub_Attestation step completes successfully, THE Workflow SHALL print a confirmation message to the GitHub Actions job summary indicating the attestation was created.
+5. IF the GitHub_Attestation step fails, THEN THE Workflow SHALL use `continue-on-error: true` on the `actions/attest@v4` step and a subsequent step SHALL check the step outcome (`steps.<id>.outcome == 'failure'`) to emit a `::warning::` annotation and print a warning to the job summary, without failing the overall job.

@@ -29,7 +29,7 @@ graph TB
         CALLER[Caller Module<br/>call_remote_executor]
         SIGN[Signing & Packaging Script]
         ORAS[Oras CLI]
-        GH_ATT[gh attestation create]
+        GH_ATT[actions/attest@v4]
     end
 
     subgraph "AWS Nitro Enclave"
@@ -95,7 +95,7 @@ sequenceDiagram
     WF->>WF: Create provenance manifest
     WF->>WF: Package attestation bundle
     WF->>GHCR: oras push (binary + attestation bundle + provenance)
-    WF->>GHCR: gh attestation create (Sigstore)
+    WF->>GHCR: actions/attest@v4 (Sigstore attestation via subject-digest)
     WF->>WF: Print summary to job output
 ```
 
@@ -120,6 +120,10 @@ Shell script executed by the Remote Executor inside the enclave.
 - `GITHUB_TOKEN` — passed via the encrypted execution payload as `github_token`
 - `GITHUB_RUN_ID` — the workflow run ID (passed via environment or extracted)
 - `GITHUB_REPOSITORY` — the repository slug (passed via environment or extracted)
+- `ACTIONS_RUNTIME_TOKEN` — runtime token for the v3 pipeline artifacts REST API
+- `ACTIONS_RUNTIME_URL` — base URL for the Actions runtime API
+
+**Note on Artifacts API version:** The build script uses the v3 pipeline artifacts REST API (`_apis/pipelines/workflows/{run_id}/artifacts`) because the enclave environment only has `curl` available — the v4 API requires the `@actions/artifact` Node.js package. The v3 API is deprecated but remains functional and is the only practical option for uploading artifacts from non-runner environments. The workflow-side download uses `actions/download-artifact@v4`, which is backward-compatible with v3-uploaded artifacts.
 
 **Outputs (stdout markers):**
 - `BINARY_SHA256:<hex_digest>` — SHA-256 of the compiled binary
@@ -131,8 +135,11 @@ Shell script executed by the Remote Executor inside the enclave.
 2. cd rust-project/
 3. cargo build --release
 4. Compute: sha256sum target/release/attested-hello → BINARY_SHA256
-5. Upload target/release/attested-hello to GitHub Actions Artifacts API
+5. Upload target/release/attested-hello to GitHub Actions Artifacts API (v3)
    using curl + github_token + ACTIONS_RUNTIME_TOKEN + ACTIONS_RUNTIME_URL
+   Note: Uses the v3 pipeline artifacts REST API since the enclave environment
+   only has curl available (no Node.js @actions/artifact package). The v3 API
+   is deprecated but remains the only option for non-runner environments.
 6. Print BINARY_SHA256:<digest> and BINARY_ARTIFACT_NAME:<name>
 ```
 
@@ -174,16 +181,17 @@ The orchestrating GitHub Actions workflow.
 3. Install Python 3.11 + caller dependencies
 4. Run caller module (captures stdout to file via `tee`)
 5. Parse `BINARY_SHA256` and `BINARY_ARTIFACT_NAME` from captured stdout
-6. Download binary artifact via `actions/download-artifact`
+6. Download binary artifact via `actions/download-artifact@v4`
 7. Verify SHA-256 digest of downloaded binary
 8. Create provenance manifest (JSON)
 9. Package attestation bundle (tar.gz of attestation-documents/)
 10. Install Oras CLI
 11. `oras login` to GHCR with `GITHUB_TOKEN`
 12. `oras push` with binary layer, attestation bundle layer, provenance annotation
-13. `gh attestation create` against the OCI artifact digest
-14. Print summary to `$GITHUB_STEP_SUMMARY`
-15. Upload attestation-documents as GitHub Actions artifact (always, even on failure)
+13. `actions/attest@v4` with `subject-name` (OCI image name) and `subject-digest` (OCI manifest digest), `push-to-registry: true` (with `continue-on-error: true`)
+14. Check attestation step outcome; print warning to `$GITHUB_STEP_SUMMARY` on failure
+15. Print summary to `$GITHUB_STEP_SUMMARY`
+16. Upload attestation-documents as GitHub Actions artifact (always, even on failure)
 
 ### 5. Provenance Manifest
 
@@ -325,7 +333,7 @@ Three areas of this feature contain pure logic suitable for property-based testi
 | `BINARY_ARTIFACT_NAME` marker missing from stdout | Fail job with descriptive error |
 | Downloaded binary SHA-256 mismatch | Fail job with integrity mismatch error showing expected vs actual |
 | `oras push` fails | Fail job, print Oras error to stderr |
-| `gh attestation create` fails | Print warning, do NOT fail job (OCI artifact already uploaded) |
+| `actions/attest@v4` step fails | Print warning via step outcome check, do NOT fail job (OCI artifact already uploaded) |
 | Artifact download fails | Fail job with descriptive error |
 
 ### Error Propagation Strategy
@@ -333,7 +341,7 @@ Three areas of this feature contain pure logic suitable for property-based testi
 - The build script uses `set -euo pipefail` to fail fast on any command error.
 - The workflow uses shell `set -euo pipefail` in each run step.
 - The attestation document upload step uses `if: always()` to ensure attestation artifacts are preserved even when later steps fail.
-- The GitHub Attestation step uses `continue-on-error: true` since it's a supplementary provenance layer — the Nitro attestation bundle is the primary trust anchor.
+- The GitHub Attestation step uses `continue-on-error: true` since it's a supplementary provenance layer — the Nitro attestation bundle is the primary trust anchor. A subsequent step checks `steps.<id>.outcome` and emits a `::warning::` annotation when the attestation failed, ensuring the failure is visible in the job summary rather than silently masked.
 
 ## Testing Strategy
 
@@ -394,7 +402,7 @@ Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}
 
 - End-to-end workflow execution (requires a live Remote Executor server and GitHub Actions environment)
 - Oras push to GHCR (requires registry access)
-- `gh attestation create` (requires Sigstore/Fulcio)
+- `actions/attest@v4` (requires Sigstore/Fulcio and GitHub Actions environment)
 - Build script execution on the Remote Executor (requires enclave environment)
 
 These are verified via manual integration testing by triggering the workflow.

@@ -42,7 +42,7 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - Install Rust toolchain via rustup if not present
     - Run `cargo build --release` in the `rust-project/` directory
     - Compute SHA-256 of the binary and print `BINARY_SHA256:<hex_digest>` to stdout
-    - Upload binary to GitHub Actions Artifacts using `github_token` and the Artifacts API via curl
+    - Upload binary to GitHub Actions Artifacts using `github_token` and the v3 pipeline artifacts REST API via curl (the v4 API requires the `@actions/artifact` Node.js package, which is unavailable in the enclave)
     - Print `BINARY_ARTIFACT_NAME:<name>` to stdout
     - Handle errors with descriptive stderr messages and non-zero exit codes
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 4.1, 4.2, 4.3_
@@ -125,7 +125,7 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
 
   - [ ] 6.5 Implement binary retrieval and verification steps
     - Parse `BINARY_SHA256` and `BINARY_ARTIFACT_NAME` from captured stdout
-    - Download binary artifact via `actions/download-artifact`
+    - Download binary artifact via `actions/download-artifact@v4`
     - Compute SHA-256 of downloaded binary and verify against expected digest
     - Fail with descriptive error on mismatch or missing markers
     - _Requirements: 4.4, 4.5, 4.6, 4.7, 4.8_
@@ -139,7 +139,9 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - _Requirements: 5.1, 5.2, 5.3, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8_
 
   - [ ] 6.7 Implement GitHub Attestation and summary steps
-    - Run `gh attestation create` against the OCI artifact digest (with `continue-on-error: true`)
+    - Use `actions/attest@v4` with `subject-name` (fully-qualified OCI image name, no tag), `subject-digest` (OCI manifest digest in `sha256:<hex>` format), and `push-to-registry: true`
+    - Set `continue-on-error: true` on the attest step and assign it a step `id` (e.g. `id: attest`)
+    - Add a subsequent step that checks `steps.attest.outcome == 'failure'` and emits a `::warning::` annotation and prints a warning to `$GITHUB_STEP_SUMMARY`
     - Print OCI reference, manifest digest, and attestation status to `$GITHUB_STEP_SUMMARY`
     - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
 
