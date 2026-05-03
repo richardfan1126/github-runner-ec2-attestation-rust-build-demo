@@ -4,6 +4,8 @@
 
 This plan implements a GitHub Actions workflow and supporting scripts that build a Rust binary inside an attested AWS Nitro Enclave environment, verify the binary's integrity, bundle it with attestation documents, push the result to GHCR as an OCI artifact via Oras, and create a GitHub Artifact Attestation for supply-chain provenance. The implementation copies the `call_remote_executor` Python module from the caller project and adds a Rust project, build script, workflow YAML, tests, and project configuration.
 
+The binary is transferred from the enclave to the workflow via a temporary GHCR package (pushed by the build script using Oras and `GITHUB_TOKEN`), which is cleaned up after the workflow completes.
+
 ## Tasks
 
 - [x] 1. Set up project structure and configuration files
@@ -36,21 +38,26 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - Create `rust-project/src/main.rs` that prints a version string and build timestamp
     - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [x] 3. Implement build script
-  - [x] 3.1 Create `scripts/build-rust.sh` shell script
+- [ ] 3. Implement build script
+  - [ ] 3.1 Create `scripts/build-rust.sh` shell script
     - Add `set -euo pipefail` for fail-fast behavior
+    - Validate required environment variables: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `COMMIT_SHA`
     - Install Rust toolchain via rustup if not present
     - Run `cargo build --release` in the `rust-project/` directory
     - Compute SHA-256 of the binary and print `BINARY_SHA256:<hex_digest>` to stdout
-    - Upload binary to GitHub Actions Artifacts using `github_token` and the v3 pipeline artifacts REST API via curl (the v4 API requires the `@actions/artifact` Node.js package, which is unavailable in the enclave)
-    - Print `BINARY_ARTIFACT_NAME:<name>` to stdout
+    - Generate a unique tag: `<short-sha>-<random-suffix>` (e.g., `abc1234-x7k9m2`)
+    - Install Oras CLI v1.3.2 (download tarball to `/tmp/`, extract binary to `/tmp/oras`, remove tarball)
+    - Authenticate to GHCR: `echo $GITHUB_TOKEN | /tmp/oras login ghcr.io --username github --password-stdin --registry-config /tmp/oras-auth.json`
+    - Push binary to GHCR with repository link annotation: `/tmp/oras push --registry-config /tmp/oras-auth.json ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag> --annotation "org.opencontainers.image.source=https://github.com/<GITHUB_REPOSITORY>" attested-hello:application/octet-stream`
+    - Print `BINARY_OCI_REF:<reference>` to stdout
     - Handle errors with descriptive stderr messages and non-zero exit codes
-    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 4.1, 4.2, 4.3_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 4.1, 4.2, 4.3_
 
-- [x] 4. Implement workflow helper scripts and parsing logic
-  - [x] 4.1 Create `scripts/parse_markers.py` — Python module for parsing stdout markers
+- [ ] 4. Implement workflow helper scripts and parsing logic
+  - [ ] 4.1 Update `scripts/parse_markers.py` — Replace `BINARY_ARTIFACT_NAME` with `BINARY_OCI_REF`
     - Implement `parse_sha256_marker(stdout: str) -> str` that extracts `BINARY_SHA256:<value>`
-    - Implement `parse_artifact_name_marker(stdout: str) -> str` that extracts `BINARY_ARTIFACT_NAME:<value>`
+    - Implement `parse_oci_ref_marker(stdout: str) -> str` that extracts `BINARY_OCI_REF:<value>`
+    - Remove the old `parse_artifact_name_marker` function
     - Raise descriptive errors when markers are missing or malformed
     - _Requirements: 4.4, 4.8_
 
@@ -64,9 +71,10 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - Return JSON-serializable dict matching the provenance manifest schema from the design
     - _Requirements: 5.2_
 
-  - [x] 4.4 Write property test for stdout marker round-trip (Property 1)
+  - [ ] 4.4 Update property test for stdout marker round-trip (Property 1)
     - **Property 1: Stdout marker round-trip**
     - For any valid marker value, embedding it in arbitrary stdout text and parsing back SHALL return the original value
+    - Update to test `BINARY_OCI_REF` instead of `BINARY_ARTIFACT_NAME`
     - Use Hypothesis to generate random marker values and surrounding text
     - Minimum 100 examples via `@settings(max_examples=100)`
     - **Validates: Requirements 2.4, 2.5, 4.2, 4.3, 4.4**
@@ -85,116 +93,121 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
     - Minimum 100 examples via `@settings(max_examples=100)`
     - **Validates: Requirements 5.2**
 
-  - [x] 4.7 Write unit tests for marker parsing, allowlist validation, and provenance manifest
+  - [ ] 4.7 Update unit tests for marker parsing, allowlist validation, and provenance manifest
     - Test `test_parse_sha256_marker` — parse known BINARY_SHA256 marker from sample stdout
-    - Test `test_parse_artifact_name_marker` — parse known BINARY_ARTIFACT_NAME marker
+    - Test `test_parse_oci_ref_marker` — parse known BINARY_OCI_REF marker
     - Test `test_missing_sha256_marker_raises` — error when marker missing
-    - Test `test_missing_artifact_name_marker_raises` — error when marker missing
+    - Test `test_missing_oci_ref_marker_raises` — error when marker missing
     - Test `test_sha256_mismatch_detected` — digest mismatch detection
     - Test `test_provenance_manifest_schema` — manifest matches expected schema
     - Test `test_allowlist_empty_accepts_all` — empty allowlist accepts any URL
     - Test `test_allowlist_rejects_unlisted` — URL not in allowlist is rejected
     - _Requirements: 2.4, 2.5, 3.4, 4.4, 4.7, 4.8, 5.2_
 
-- [x] 5. Checkpoint - Ensure all tests pass
+- [ ] 5. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [x] 6. Implement GitHub Actions workflow
-  - [x] 6.1 Create `.github/workflows/attested-rust-build.yml`
+- [ ] 6. Implement GitHub Actions workflow
+  - [ ] 6.1 Create `.github/workflows/attested-rust-build.yml`
     - Define `workflow_dispatch` trigger with inputs: `server_url` (required), `script_path`, `commit_hash`, `repository_url`, `audience`, `server_url_allowlist`
     - Set permissions: `id-token: write`, `contents: read`, `packages: write`, `attestations: write`
     - Add `ROOT_CERT_PEM` and `EXPECTED_PCRS` environment variables matching the caller project
     - _Requirements: 3.1, 3.2, 8.4, 8.5_
 
-  - [x] 6.2 Implement input validation step
+  - [ ] 6.2 Implement input validation step
     - Validate `server_url` is non-empty
     - Validate `server_url` against `server_url_allowlist` when provided
     - _Requirements: 3.3, 3.4_
 
-  - [x] 6.3 Implement checkout and dependency installation steps
+  - [ ] 6.3 Implement checkout, dependency installation, and Oras/GHCR setup steps
     - Checkout at `commit_hash` or current SHA
     - Install Python 3.11 and caller dependencies via `pip install -e ".[dev]"`
-    - _Requirements: 3.5, 3.6_
+    - Install Oras CLI
+    - Login to GHCR with `GITHUB_TOKEN` via `oras login`
+    - _Requirements: 3.5, 3.6, 6.1, 6.2_
 
-  - [x] 6.4 Implement caller invocation step
+  - [ ] 6.4 Implement caller invocation step
     - Invoke `python .github/scripts/call_remote_executor` with all required arguments
     - Capture stdout to file via `tee` for marker parsing
     - Pass `--attestation-output-dir attestation-documents`
     - Pass `--github-token` from `secrets.GITHUB_TOKEN`
-    - _Requirements: 3.7, 3.8_
+    - Pass `--script-env` for `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and `COMMIT_SHA`
+    - _Requirements: 3.7, 3.8, 10.3_
 
-  - [x] 6.5 Implement binary retrieval and verification steps
-    - Parse `BINARY_SHA256` and `BINARY_ARTIFACT_NAME` from captured stdout
-    - Download binary artifact via `actions/download-artifact@v4`
+  - [ ] 6.5 Implement binary retrieval and verification steps
+    - Parse `BINARY_SHA256` and `BINARY_OCI_REF` from captured stdout
+    - Pull temporary binary from GHCR via `oras pull` using the extracted OCI reference
     - Compute SHA-256 of downloaded binary and verify against expected digest
     - Fail with descriptive error on mismatch or missing markers
     - _Requirements: 4.4, 4.5, 4.6, 4.7, 4.8_
 
-  - [x] 6.6 Implement signing, packaging, and Oras upload steps
+  - [ ] 6.6 Implement signing, packaging, and Oras upload steps
     - Create provenance manifest JSON
     - Package attestation bundle as tar.gz
-    - Install Oras CLI
-    - Login to GHCR with `GITHUB_TOKEN`
     - Push binary + attestation bundle + provenance as OCI artifact to `ghcr.io/<owner>/<repo>/attested-hello:<short-sha>`
-    - _Requirements: 5.1, 5.2, 5.3, 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8_
+    - _Requirements: 5.1, 5.2, 5.3, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8_
 
-  - [x] 6.7 Implement GitHub Attestation and summary steps
+  - [ ] 6.7 Implement GitHub Attestation and summary steps
     - Use `actions/attest@v4` with `subject-name` (fully-qualified OCI image name, no tag), `subject-digest` (OCI manifest digest in `sha256:<hex>` format), and `push-to-registry: true`
     - Set `continue-on-error: true` on the attest step and assign it a step `id` (e.g. `id: attest`)
     - Add a subsequent step that checks `steps.attest.outcome == 'failure'` and emits a `::warning::` annotation and prints a warning to `$GITHUB_STEP_SUMMARY`
     - Print OCI reference, manifest digest, and attestation status to `$GITHUB_STEP_SUMMARY`
     - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
 
-  - [x] 6.8 Implement attestation document artifact upload step
+  - [ ] 6.8 Implement temporary GHCR package cleanup steps
+    - Add a `run` step with `if: always()` and `continue-on-error: true` that looks up the temporary package version ID by tag using `gh api` and the GitHub Packages REST API
+    - Add `actions/delete-package-versions@v5` step with `if: always() && steps.<id>.outputs.version_id != ''` and `continue-on-error: true`
+    - Pass the version ID via `package-version-ids`, set `package-name` and `package-type: container`
+    - _Requirements: 11.1, 11.2, 11.3, 11.4_
+
+  - [ ] 6.9 Implement attestation document artifact upload step
     - Upload `attestation-documents/` as GitHub Actions artifact with `if: always()`
     - Include provenance manifest in the upload
     - _Requirements: 7.1, 7.2, 7.3, 3.9_
 
-- [x] 7. Checkpoint - Ensure all tests pass
+- [ ] 7. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [x] 8. Write smoke tests for static configuration
-  - [x] 8.1 Write smoke tests for workflow YAML and project configuration
+- [ ] 8. Write smoke tests for static configuration
+  - [ ] 8.1 Write smoke tests for workflow YAML and project configuration
     - Test `test_workflow_yaml_inputs` — verify workflow_dispatch inputs in YAML
     - Test `test_workflow_yaml_permissions` — verify permissions in YAML
     - Test `test_workflow_yaml_root_cert` — verify ROOT_CERT_PEM env var in YAML
     - Test `test_workflow_yaml_expected_pcrs` — verify EXPECTED_PCRS env var in YAML
+    - Test `test_workflow_yaml_cleanup_step` — verify cleanup steps: version ID lookup step and `actions/delete-package-versions@v5` step with `if: always()` and `continue-on-error: true`
     - Test `test_cargo_toml_binary_target` — verify Cargo.toml has attested-hello target
     - Test `test_pyproject_dependencies` — verify pyproject.toml has caller dependencies
     - Test `test_gitignore_patterns` — verify .gitignore has required patterns
-    - _Requirements: 1.1, 3.1, 3.2, 8.1, 8.2, 8.4, 8.5_
+    - _Requirements: 1.1, 3.1, 3.2, 8.1, 8.2, 8.4, 8.5, 11.1, 11.2_
 
-- [x] 9. Final checkpoint - Ensure all tests pass
+- [ ] 9. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [x] 10. Implement script environment variable forwarding
-  - [x] 10.1 Add `--script-env` CLI argument to the Caller module
-    - Add a `--script-env` argument to `cli.py` that can be specified multiple times, each providing a `KEY=VALUE` pair
-    - Parse the key-value pairs into a `dict[str, str]` and pass them to `caller.run()` and `caller.execute()`
+- [ ] 10. Update script environment variable forwarding
+  - [ ] 10.1 Verify `--script-env` CLI argument in the Caller module
+    - The `--script-env` argument already exists in `cli.py` from the previous implementation
+    - Verify it can be specified multiple times, each providing a `KEY=VALUE` pair
     - _Requirements: 10.1_
 
-  - [x] 10.2 Include `script_env` in the encrypted /execute payload
-    - In `caller.py` `execute()` method, add `script_env` to the `plaintext_payload` dictionary alongside the existing fields (repository_url, commit_hash, script_path, github_token, oidc_token, nonce)
+  - [ ] 10.2 Verify `script_env` is included in the encrypted /execute payload
+    - The `script_env` field already exists in `caller.py` `execute()` method from the previous implementation
     - _Requirements: 10.2_
 
-  - [x] 10.3 Update workflow to pass GitHub Actions runtime env vars via `--script-env`
-    - In the "Run Remote Executor Caller" step of `attested-rust-build.yml`, add `--script-env` arguments for `GITHUB_TOKEN`, `GITHUB_RUN_ID`, `GITHUB_REPOSITORY`, `ACTIONS_RUNTIME_TOKEN`, and `ACTIONS_RUNTIME_URL`
-    - Use `$GITHUB_TOKEN` env var for the token, and `${{ github.run_id }}`, `${{ github.repository }}`, etc. for the other values
-    - Expose `ACTIONS_RUNTIME_TOKEN` and `ACTIONS_RUNTIME_URL` from the runner environment
+  - [ ] 10.3 Update workflow to pass simplified env vars via `--script-env`
+    - In the "Run Remote Executor Caller" step of `attested-rust-build.yml`, pass `--script-env` arguments for `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and `COMMIT_SHA`
+    - Remove the old `ACTIONS_RUNTIME_TOKEN` and `ACTIONS_RUNTIME_URL` forwarding (no longer needed)
     - _Requirements: 10.3, 10.4_
 
-  - [x] 10.4 Write unit tests for `--script-env` argument parsing
-    - Test that `--script-env KEY=VALUE` pairs are correctly parsed into a dictionary
-    - Test that multiple `--script-env` arguments are accumulated
-    - Test that the dictionary is included in the encrypted payload
+  - [ ] 10.4 Update unit tests for `--script-env` argument parsing
+    - Verify existing tests still pass with the simplified env var set
+    - Update any tests that referenced `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_RUNTIME_URL`
     - _Requirements: 10.1, 10.2_
 
-- [x] 11. Checkpoint - Ensure all script_env forwarding tests pass
+- [ ] 11. Checkpoint - Ensure all script_env forwarding tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
 
-- Tasks marked with `*` are optional and can be skipped for faster MVP
 - Each task references specific requirements for traceability
 - Checkpoints ensure incremental validation
 - Property tests validate universal correctness properties from the design document
@@ -203,3 +216,7 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
 - Tests use Python/pytest/Hypothesis as specified in the design
 - The build script uses shell (bash) as it runs on the Remote Executor
 - The Rust project is minimal — just enough to produce a binary for the demo
+- The build script uses Oras CLI v1.3.2 to push to GHCR — this only requires `GITHUB_TOKEN` (no `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_RUNTIME_URL`). The build script downloads and installs Oras entirely within `/tmp/` (the only writable directory in the enclave), using `--registry-config /tmp/oras-auth.json` for credential storage. The `org.opencontainers.image.source` annotation is included to link the package to the repository for `GITHUB_TOKEN` delete permissions.
+- The temporary GHCR package is cleaned up via `actions/delete-package-versions@v5` after the workflow completes
+- Tasks from the previous implementation that are unchanged (project structure, caller module copy, Rust project, allowlist validation, provenance manifest) are marked as `[x]` (already done)
+- Tasks that need modification (build script, marker parsing, workflow, tests) are marked as `[ ]` (to be done)

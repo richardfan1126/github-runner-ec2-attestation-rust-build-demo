@@ -6,17 +6,19 @@ This design describes a GitHub Actions workflow and supporting scripts that buil
 
 The system reuses the `call_remote_executor` Python module from the `github-runner-ec2-attestation-caller` project (copied into this repository) to handle the attested communication channel: health check, OIDC token acquisition, NitroTPM attestation validation, PQ_Hybrid_KEM key exchange, encrypted execution submission, output polling, and output integrity verification.
 
-The build script runs on the Remote Executor inside the enclave, installs the Rust toolchain, compiles the binary, computes its SHA-256 digest, and uploads the binary to GitHub Actions Artifacts using the `github_token` passed through the encrypted payload. The workflow then downloads the binary, verifies its digest, creates a provenance manifest, pushes everything to GHCR via Oras, and creates a Sigstore-based GitHub Attestation.
+The build script runs on the Remote Executor inside the enclave, installs the Rust toolchain, compiles the binary, computes its SHA-256 digest, and pushes the binary to GHCR as a temporary OCI package using the `GITHUB_TOKEN` passed through the encrypted payload. The workflow then pulls the binary from GHCR, verifies its digest, creates a provenance manifest, pushes the final attested artifact to GHCR via Oras, creates a Sigstore-based GitHub Attestation, and cleans up the temporary package.
 
 ### Key Design Decisions
 
 1. **Copy the caller module** rather than referencing it as a git submodule. This keeps the demo self-contained and avoids cross-repository dependency management. The module is placed at `.github/scripts/call_remote_executor/`.
 
-2. **Use the GitHub Actions Artifacts API directly from the build script** (via `curl` and the `github_token`) to transfer the binary out of the enclave. The Remote Executor has no shared filesystem with the GitHub Actions runner, so Artifacts serve as the transfer mechanism.
+2. **Use GHCR as the temporary transfer mechanism** for the binary. The Build_Script installs the Oras CLI, authenticates to GHCR with `GITHUB_TOKEN` via `oras login`, and pushes the compiled binary to a temporary OCI reference (`ghcr.io/<repo>/tmp-build/<tag>`) via `oras push`. The workflow pulls it back using `oras pull`. This avoids the deprecated GitHub Actions Artifacts v3 API and only requires `GITHUB_TOKEN` for authentication (no `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_RUNTIME_URL` needed). The temporary package is cleaned up after the workflow completes.
 
-3. **Use Oras CLI** for OCI artifact push rather than Docker. The binary is not a container image — it's an arbitrary artifact with attestation metadata layers.
+3. **Use Oras CLI everywhere** for OCI artifact push/pull rather than Docker or raw OCI API calls. Both the build script (inside the enclave) and the workflow use Oras. The binary is not a container image — it's an arbitrary artifact with attestation metadata layers. Oras handles the OCI Distribution API details (blob upload, manifest creation) transparently.
 
 4. **Two-layer attestation**: The Nitro attestation bundle proves the binary was built in a trusted enclave. The GitHub Artifact Attestation (Sigstore) proves the OCI artifact was produced by a specific GitHub Actions workflow run.
+
+5. **Cleanup temporary GHCR packages** via `actions/delete-package-versions@v5` in an `if: always()` step. A preceding step looks up the version ID by tag using the GitHub REST API, then passes it to the action via `package-version-ids` to delete only the specific version.
 
 ## Architecture
 
@@ -30,6 +32,7 @@ graph TB
         SIGN[Signing & Packaging Script]
         ORAS[Oras CLI]
         GH_ATT[actions/attest@v4]
+        CLEANUP[Cleanup Step<br/>delete-package-versions@v5]
     end
 
     subgraph "AWS Nitro Enclave"
@@ -40,24 +43,25 @@ graph TB
 
     subgraph "External Services"
         GHCR[GHCR<br/>ghcr.io]
-        GHA_ART[GitHub Actions<br/>Artifacts API]
         OIDC[GitHub OIDC Provider]
         SIGSTORE[Sigstore / Fulcio]
+        GH_API[GitHub Packages<br/>REST API]
     end
 
     WF --> CALLER
     CALLER -->|"Attested Channel<br/>(PQ_Hybrid_KEM)"| RE
     RE --> BS
     BS --> RUST
-    BS -->|"Upload binary via<br/>github_token"| GHA_ART
+    BS -->|"oras push temp binary<br/>via GITHUB_TOKEN"| GHCR
     CALLER -->|"OIDC Token"| OIDC
-    WF -->|"Download binary"| GHA_ART
+    WF -->|"Pull temp binary<br/>via Oras"| GHCR
     WF --> SIGN
     SIGN --> ORAS
-    ORAS -->|"Push OCI artifact"| GHCR
+    ORAS -->|"Push final OCI artifact"| GHCR
     WF --> GH_ATT
     GH_ATT -->|"Create attestation"| SIGSTORE
     GH_ATT -->|"Bind to OCI digest"| GHCR
+    CLEANUP -->|"Delete temp package"| GH_API
 ```
 
 ### Sequence Diagram
@@ -68,8 +72,8 @@ sequenceDiagram
     participant CALLER as Caller Module
     participant RE as Remote Executor
     participant BS as Build Script
-    participant ART as GH Actions Artifacts
     participant GHCR as GHCR
+    participant GH_API as GitHub Packages API
 
     WF->>WF: Validate inputs, checkout, install deps
     WF->>CALLER: Invoke with server_url, script_path, etc.
@@ -83,20 +87,21 @@ sequenceDiagram
     RE->>BS: Clone repo, inject script_env as container env vars, run build-rust.sh
     BS->>BS: Install Rust, cargo build --release
     BS->>BS: Compute SHA-256 of binary
-    BS->>ART: Upload binary via Artifacts API (using github_token)
-    BS-->>RE: stdout with BINARY_SHA256 + BINARY_ARTIFACT_NAME
+    BS->>GHCR: oras push binary as temp OCI package (using GITHUB_TOKEN)
+    BS-->>RE: stdout with BINARY_SHA256 + BINARY_OCI_REF
     RE-->>CALLER: Encrypted execution response
     CALLER->>RE: POST /execution/{id}/output (poll)
     RE-->>CALLER: Encrypted output with attestation
     CALLER-->>WF: Exit code 0, stdout, attestation docs
-    WF->>WF: Parse BINARY_SHA256 and BINARY_ARTIFACT_NAME from stdout
-    WF->>ART: Download binary artifact
+    WF->>WF: Parse BINARY_SHA256 and BINARY_OCI_REF from stdout
+    WF->>GHCR: oras pull (temp binary)
     WF->>WF: Verify SHA-256 digest matches
     WF->>WF: Create provenance manifest
     WF->>WF: Package attestation bundle
-    WF->>GHCR: oras push (binary + attestation bundle + provenance)
+    WF->>GHCR: oras push (final artifact: binary + attestation bundle + provenance)
     WF->>GHCR: actions/attest@v4 (Sigstore attestation via subject-digest)
     WF->>WF: Print summary to job output
+    WF->>GH_API: Delete temp GHCR package version (always, even on failure)
 ```
 
 ## Components and Interfaces
@@ -118,18 +123,18 @@ Shell script executed by the Remote Executor inside the enclave.
 **Inputs (environment):**
 - Working directory: repository root (cloned by Remote Executor)
 - `GITHUB_TOKEN` — passed via the encrypted execution payload's `script_env` dictionary
-- `GITHUB_RUN_ID` — the workflow run ID, passed via the encrypted execution payload's `script_env` dictionary
 - `GITHUB_REPOSITORY` — the repository slug, passed via the encrypted execution payload's `script_env` dictionary
-- `ACTIONS_RUNTIME_TOKEN` — runtime token for the v3 pipeline artifacts REST API, passed via the encrypted execution payload's `script_env` dictionary
-- `ACTIONS_RUNTIME_URL` — base URL for the Actions runtime API, passed via the encrypted execution payload's `script_env` dictionary
+- `COMMIT_SHA` — the commit SHA being built, passed via the encrypted execution payload's `script_env` dictionary
 
-**Note on environment variable forwarding:** All five environment variables are forwarded from the GitHub Actions runner to the Execution_Container via the `script_env` field in the encrypted /execute payload. The caller module includes them in the `script_env` dictionary, the Remote Executor server extracts and sanitizes the dictionary, and the Script_Executor injects them as container environment variables. This is necessary because the Execution_Container runs in an isolated Docker environment with no access to the GitHub Actions runner's environment.
+**Note on environment variable forwarding:** The environment variables are forwarded from the GitHub Actions runner to the Execution_Container via the `script_env` field in the encrypted /execute payload. The caller module includes them in the `script_env` dictionary, the Remote Executor server extracts and sanitizes the dictionary, and the Script_Executor injects them as container environment variables. This is necessary because the Execution_Container runs in an isolated Docker environment with no access to the GitHub Actions runner's environment.
 
-**Note on Artifacts API version:** The build script uses the v3 pipeline artifacts REST API (`_apis/pipelines/workflows/{run_id}/artifacts`) because the enclave environment only has `curl` available — the v4 API requires the `@actions/artifact` Node.js package. The v3 API is deprecated but remains functional and is the only practical option for uploading artifacts from non-runner environments. The workflow-side download uses `actions/download-artifact@v4`, which is backward-compatible with v3-uploaded artifacts.
+**Note on GHCR upload mechanism:** The build script installs the Oras CLI and uses `oras login` + `oras push` to upload the binary to GHCR. Oras handles the OCI Distribution API details (blob upload, manifest creation) transparently. Authentication uses `GITHUB_TOKEN` as the password with `oras login ghcr.io`. This avoids the deprecated GitHub Actions Artifacts v3 API and eliminates the need for `ACTIONS_RUNTIME_TOKEN` and `ACTIONS_RUNTIME_URL`.
+
+**Note on Oras installation in the enclave:** The enclave's Execution_Container only has `/tmp/` as a writable directory. The build script downloads the Oras release tarball to `/tmp/`, extracts the `oras` binary to `/tmp/oras`, removes the tarball, and invokes Oras by absolute path (`/tmp/oras`). The `oras login` command stores credentials in `~/.docker/config.json` by default; since the home directory may not be writable, the `--registry-config /tmp/oras-auth.json` flag is used to store credentials in `/tmp/` instead. The latest stable version is 1.3.2.
 
 **Outputs (stdout markers):**
 - `BINARY_SHA256:<hex_digest>` — SHA-256 of the compiled binary
-- `BINARY_ARTIFACT_NAME:<name>` — Name of the uploaded GitHub Actions artifact
+- `BINARY_OCI_REF:<reference>` — Full OCI reference of the temporary GHCR package (e.g., `ghcr.io/<repo>/tmp-build:<tag>`)
 
 **Algorithm:**
 ```
@@ -137,12 +142,16 @@ Shell script executed by the Remote Executor inside the enclave.
 2. cd rust-project/
 3. cargo build --release
 4. Compute: sha256sum target/release/attested-hello → BINARY_SHA256
-5. Upload target/release/attested-hello to GitHub Actions Artifacts API (v3)
-   using curl + github_token + ACTIONS_RUNTIME_TOKEN + ACTIONS_RUNTIME_URL
-   Note: Uses the v3 pipeline artifacts REST API since the enclave environment
-   only has curl available (no Node.js @actions/artifact package). The v3 API
-   is deprecated but remains the only option for non-runner environments.
-6. Print BINARY_SHA256:<digest> and BINARY_ARTIFACT_NAME:<name>
+5. Generate unique tag: <short-sha>-<random-suffix>
+6. Install Oras CLI v1.3.2 (download and extract entirely within /tmp/):
+   curl -L -o /tmp/oras_1.3.2_linux_amd64.tar.gz https://github.com/oras-project/oras/releases/download/v1.3.2/oras_1.3.2_linux_amd64.tar.gz
+   tar -zxf /tmp/oras_1.3.2_linux_amd64.tar.gz -C /tmp oras
+   rm -f /tmp/oras_1.3.2_linux_amd64.tar.gz
+7. Login to GHCR: echo $GITHUB_TOKEN | /tmp/oras login ghcr.io --username github --password-stdin --registry-config /tmp/oras-auth.json
+8. Push binary: /tmp/oras push --registry-config /tmp/oras-auth.json ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag> \
+     --annotation "org.opencontainers.image.source=https://github.com/<GITHUB_REPOSITORY>" \
+     target/release/attested-hello:application/octet-stream
+9. Print BINARY_SHA256:<digest> and BINARY_OCI_REF:ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag>
 ```
 
 **Error handling:** Each step checks exit codes. Failures print descriptive errors to stderr and exit non-zero.
@@ -154,11 +163,11 @@ Copied from `github-runner-ec2-attestation-caller`. This is the Python package t
 **Files (copied as-is):**
 - `__init__.py`, `__main__.py`, `cli.py`, `caller.py`, `encryption.py`, `attestation.py`, `artifact.py`, `errors.py`
 
-**Interface:** Invoked as `python .github/scripts/call_remote_executor --server-url ... --script-path ... --github-token ... --root-cert-pem ... --expected-pcrs ... --attestation-output-dir attestation-documents --script-env GITHUB_RUN_ID=... --script-env GITHUB_REPOSITORY=... --script-env ACTIONS_RUNTIME_TOKEN=... --script-env ACTIONS_RUNTIME_URL=...`
+**Interface:** Invoked as `python .github/scripts/call_remote_executor --server-url ... --script-path ... --github-token ... --root-cert-pem ... --expected-pcrs ... --attestation-output-dir attestation-documents --script-env GITHUB_REPOSITORY=... --script-env COMMIT_SHA=...`
 
 **Outputs:**
 - Exit code (0 = success)
-- stdout/stderr from the remote execution (including the `BINARY_SHA256` and `BINARY_ARTIFACT_NAME` markers)
+- stdout/stderr from the remote execution (including the `BINARY_SHA256` and `BINARY_OCI_REF` markers)
 - `attestation-documents/` directory containing server-identity, execution-acceptance, and output-integrity attestation documents plus `manifest.json`
 
 ### 4. Workflow (`.github/workflows/attested-rust-build.yml`)
@@ -181,19 +190,20 @@ The orchestrating GitHub Actions workflow.
 1. Validate inputs (non-empty server_url, allowlist check)
 2. Checkout repository at commit_hash
 3. Install Python 3.11 + caller dependencies
-4. Run caller module (captures stdout to file via `tee`)
-5. Parse `BINARY_SHA256` and `BINARY_ARTIFACT_NAME` from captured stdout
-6. Download binary artifact via `actions/download-artifact@v4`
-7. Verify SHA-256 digest of downloaded binary
-8. Create provenance manifest (JSON)
-9. Package attestation bundle (tar.gz of attestation-documents/)
-10. Install Oras CLI
-11. `oras login` to GHCR with `GITHUB_TOKEN`
-12. `oras push` with binary layer, attestation bundle layer, provenance annotation
+4. Install Oras CLI
+5. Login to GHCR with `GITHUB_TOKEN`
+6. Run caller module (captures stdout to file via `tee`)
+7. Parse `BINARY_SHA256` and `BINARY_OCI_REF` from captured stdout
+8. Pull temporary binary from GHCR via `oras pull`
+9. Verify SHA-256 digest of downloaded binary
+10. Create provenance manifest (JSON)
+11. Package attestation bundle (tar.gz of attestation-documents/)
+12. `oras push` final artifact with binary layer, attestation bundle layer, provenance annotation
 13. `actions/attest@v4` with `subject-name` (OCI image name) and `subject-digest` (OCI manifest digest), `push-to-registry: true` (with `continue-on-error: true`)
 14. Check attestation step outcome; print warning to `$GITHUB_STEP_SUMMARY` on failure
 15. Print summary to `$GITHUB_STEP_SUMMARY`
-16. Upload attestation-documents as GitHub Actions artifact (always, even on failure)
+16. Cleanup: Delete temporary GHCR package version via `actions/delete-package-versions@v5` (`if: always()`, `continue-on-error: true`)
+17. Upload attestation-documents as GitHub Actions artifact (always, even on failure)
 
 ### 5. Provenance Manifest
 
@@ -222,6 +232,51 @@ A JSON document that ties together the binary, attestation chain, and build meta
 }
 ```
 
+### 6. Temporary GHCR Package Cleanup
+
+The workflow includes a cleanup step that runs with `if: always()` to delete the temporary GHCR package after the workflow completes. It uses the `actions/delete-package-versions@v5` GitHub Action.
+
+**Cleanup approach:** For container packages, the action's `ignore-versions` regex matches against the version **name** field, which for containers is the manifest digest (e.g., `sha256:abc...`), not the tag. Therefore, to delete a specific tagged version, a preceding step must look up the package version ID via the GitHub REST API, and then pass it to the action via `package-version-ids`.
+
+**Cleanup steps:**
+```yaml
+- name: Get temporary package version ID
+  if: always()
+  id: get_tmp_pkg_version
+  continue-on-error: true
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  shell: bash
+  run: |
+    set -euo pipefail
+    # Extract package name and tag from BINARY_OCI_REF
+    # e.g., ghcr.io/owner/repo/tmp-build:abc1234-x7k9m2
+    PACKAGE_NAME="<repo>/tmp-build"  # extracted from BINARY_OCI_REF
+    TAG="<tag>"                       # extracted from BINARY_OCI_REF
+
+    # List versions and find the one matching our tag
+    VERSION_ID=$(gh api \
+      "/orgs/${{ github.repository_owner }}/packages/container/${PACKAGE_NAME//\//%2F}/versions" \
+      --jq ".[] | select(.metadata.container.tags[] == \"${TAG}\") | .id")
+
+    if [ -n "$VERSION_ID" ]; then
+      echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
+    fi
+
+- name: Cleanup temporary GHCR package
+  if: always() && steps.get_tmp_pkg_version.outputs.version_id != ''
+  uses: actions/delete-package-versions@v5
+  continue-on-error: true
+  with:
+    package-name: <repo>/tmp-build    # extracted from BINARY_OCI_REF
+    package-type: container
+    package-version-ids: ${{ steps.get_tmp_pkg_version.outputs.version_id }}
+```
+
+**Note on GITHUB_TOKEN permissions for deletion:** Per GitHub docs, the ability for GitHub Actions workflows to delete packages using the REST API is in public preview. Since the temporary package is pushed from inside the enclave (not from the workflow runner), the package may not be automatically linked to the repository. To ensure the `GITHUB_TOKEN` has delete permission, the build script includes the `org.opencontainers.image.source` annotation pointing to the repository URL when pushing via Oras. This links the package to the repository and grants the `GITHUB_TOKEN` admin access.
+
+**Note on package name encoding:** GHCR container package names use forward slashes in the `actions/delete-package-versions` action's `package-name` input (e.g., `repo/tmp-build`). When using the `gh api` command to look up version IDs, slashes must be URL-encoded as `%2F`.
+
 ## Data Models
 
 ### Build Script Output Protocol
@@ -231,11 +286,11 @@ The build script communicates results to the workflow via stdout markers embedde
 | Marker | Format | Description |
 |---|---|---|
 | `BINARY_SHA256` | `BINARY_SHA256:<64-char-hex>` | SHA-256 digest of the compiled binary |
-| `BINARY_ARTIFACT_NAME` | `BINARY_ARTIFACT_NAME:<string>` | Name of the uploaded GitHub Actions artifact |
+| `BINARY_OCI_REF` | `BINARY_OCI_REF:<oci-reference>` | Full OCI reference of the temporary GHCR package |
 
 These markers are parsed by the workflow using `grep` after the caller completes.
 
-### OCI Artifact Structure
+### OCI Artifact Structure (Final)
 
 The Oras push creates an OCI manifest with the following layers:
 
@@ -246,6 +301,16 @@ The Oras push creates an OCI manifest with the following layers:
 | Provenance Manifest | `application/vnd.attestation.provenance+json` | JSON provenance manifest |
 
 **OCI Reference:** `ghcr.io/<owner>/<repo>/attested-hello:<short-sha>`
+
+### Temporary OCI Package Structure
+
+The build script pushes a single-layer OCI artifact:
+
+| Layer | Media Type | Description |
+|---|---|---|
+| Binary | `application/octet-stream` | The `attested-hello` executable |
+
+**OCI Reference:** `ghcr.io/<owner>/<repo>/tmp-build:<short-sha>-<random-suffix>`
 
 ### Attestation Documents Directory Structure
 
@@ -297,7 +362,7 @@ Three areas of this feature contain pure logic suitable for property-based testi
 
 ### Property 1: Stdout marker round-trip
 
-*For any* marker type (`BINARY_SHA256` or `BINARY_ARTIFACT_NAME`) and *for any* valid marker value (64-char hex string for SHA256, non-empty string without newlines for artifact name), embedding the marker in arbitrary stdout text as `<MARKER_TYPE>:<value>` and then parsing the stdout to extract the value SHALL return the original value.
+*For any* marker type (`BINARY_SHA256` or `BINARY_OCI_REF`) and *for any* valid marker value (64-char hex string for SHA256, non-empty string without newlines for OCI ref), embedding the marker in arbitrary stdout text as `<MARKER_TYPE>:<value>` and then parsing the stdout to extract the value SHALL return the original value.
 
 **Validates: Requirements 2.4, 2.5, 4.2, 4.3, 4.4**
 
@@ -321,8 +386,10 @@ Three areas of this feature contain pure logic suitable for property-based testi
 |---|---|---|
 | Rust toolchain installation fails | Print descriptive error to stderr | Non-zero |
 | `cargo build --release` fails | Print compiler error output to stderr | Non-zero |
-| GitHub Actions Artifact upload fails | Print upload error to stderr | Non-zero |
-| `github_token` missing or invalid | Print auth error to stderr | Non-zero |
+| GHCR authentication fails (`oras login`) | Print auth error to stderr | Non-zero |
+| GHCR upload fails (`oras push`) | Print upload error to stderr | Non-zero |
+| Oras CLI installation fails | Print install error to stderr | Non-zero |
+| `GITHUB_TOKEN` missing or invalid | Print auth error to stderr | Non-zero |
 
 ### Workflow Errors
 
@@ -332,17 +399,19 @@ Three areas of this feature contain pure logic suitable for property-based testi
 | `server_url` not in allowlist | Fail job with `::error::` annotation |
 | Caller exits non-zero | Fail job, upload attestation docs (if any) |
 | `BINARY_SHA256` marker missing from stdout | Fail job with descriptive error |
-| `BINARY_ARTIFACT_NAME` marker missing from stdout | Fail job with descriptive error |
+| `BINARY_OCI_REF` marker missing from stdout | Fail job with descriptive error |
+| `oras pull` of temporary binary fails | Fail job with descriptive error |
 | Downloaded binary SHA-256 mismatch | Fail job with integrity mismatch error showing expected vs actual |
-| `oras push` fails | Fail job, print Oras error to stderr |
+| `oras push` (final artifact) fails | Fail job, print Oras error to stderr |
 | `actions/attest@v4` step fails | Print warning via step outcome check, do NOT fail job (OCI artifact already uploaded) |
-| Artifact download fails | Fail job with descriptive error |
+| Temporary GHCR package cleanup fails | `continue-on-error: true` on the action, do NOT fail job |
 
 ### Error Propagation Strategy
 
 - The build script uses `set -euo pipefail` to fail fast on any command error.
 - The workflow uses shell `set -euo pipefail` in each run step.
 - The attestation document upload step uses `if: always()` to ensure attestation artifacts are preserved even when later steps fail.
+- The temporary GHCR package cleanup step uses `if: always()` and `continue-on-error: true` to ensure the temporary package removal is attempted regardless of workflow outcome, and cleanup failures do not fail the job.
 - The GitHub Attestation step uses `continue-on-error: true` since it's a supplementary provenance layer — the Nitro attestation bundle is the primary trust anchor. A subsequent step checks `steps.<id>.outcome` and emits a `::warning::` annotation when the attestation failed, ensuring the failure is visible in the job summary rather than silently masked.
 
 ## Testing Strategy
@@ -373,9 +442,9 @@ Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}
 | Test | Requirement | Description |
 |---|---|---|
 | `test_parse_sha256_marker` | 2.4, 4.4 | Parse a known BINARY_SHA256 marker from sample stdout |
-| `test_parse_artifact_name_marker` | 2.5, 4.4 | Parse a known BINARY_ARTIFACT_NAME marker from sample stdout |
+| `test_parse_oci_ref_marker` | 2.5, 4.4 | Parse a known BINARY_OCI_REF marker from sample stdout |
 | `test_missing_sha256_marker_raises` | 4.8 | Verify error when BINARY_SHA256 is missing |
-| `test_missing_artifact_name_marker_raises` | 4.8 | Verify error when BINARY_ARTIFACT_NAME is missing |
+| `test_missing_oci_ref_marker_raises` | 4.8 | Verify error when BINARY_OCI_REF is missing |
 | `test_sha256_mismatch_detected` | 4.7 | Verify digest mismatch is detected |
 | `test_provenance_manifest_schema` | 5.2 | Verify manifest JSON matches expected schema |
 | `test_allowlist_empty_accepts_all` | 3.4 | Verify empty allowlist accepts any URL |
@@ -389,6 +458,7 @@ Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}
 | `test_workflow_yaml_permissions` | 3.2 | Verify permissions in YAML |
 | `test_workflow_yaml_root_cert` | 8.4 | Verify ROOT_CERT_PEM env var in YAML |
 | `test_workflow_yaml_expected_pcrs` | 8.5 | Verify EXPECTED_PCRS env var in YAML |
+| `test_workflow_yaml_cleanup_step` | 11.1, 11.2 | Verify cleanup steps: version ID lookup and `actions/delete-package-versions@v5` with `if: always()` and `continue-on-error: true` |
 | `test_cargo_toml_binary_target` | 1.1 | Verify Cargo.toml has attested-hello target |
 | `test_pyproject_dependencies` | 8.1 | Verify pyproject.toml has caller dependencies |
 | `test_gitignore_patterns` | 8.2 | Verify .gitignore has required patterns |
@@ -406,5 +476,6 @@ Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}
 - Oras push to GHCR (requires registry access)
 - `actions/attest@v4` (requires Sigstore/Fulcio and GitHub Actions environment)
 - Build script execution on the Remote Executor (requires enclave environment)
+- Temporary GHCR package cleanup (requires live GitHub Packages API)
 
 These are verified via manual integration testing by triggering the workflow.

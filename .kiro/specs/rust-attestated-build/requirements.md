@@ -18,7 +18,7 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 - **OCI_Artifact**: An artifact stored in an OCI registry, consisting of the Binary_Artifact and its associated Attestation_Document as layers or annotations.
 - **Rust_Project**: A minimal Rust project (Cargo.toml and source files) that compiles into the Binary_Artifact.
 - **Attestation_Bundle**: A directory containing the server-identity, execution-acceptance, and output-integrity attestation documents and their manifest, produced by the Caller during execution.
-- **Temporary_Store**: GitHub Actions Artifacts, used to transfer the Binary_Artifact out of the attested environment. The Remote_Executor uses the `github_token` (received in the encrypted execution payload) to upload artifacts via the GitHub Actions Artifacts v3 pipeline REST API (the only option available in the enclave's curl-only environment), and the Workflow downloads them using the `actions/download-artifact@v4` action.
+- **Temporary_GHCR_Package**: A temporary OCI artifact pushed to GHCR by the Build_Script from inside the enclave, used to transfer the Binary_Artifact to the GitHub Actions runner. The Build_Script installs the Oras CLI, authenticates to GHCR using the `GITHUB_TOKEN` (received in the encrypted execution payload), and pushes the binary via `oras push`. The Workflow pulls the binary using `oras pull`, and a cleanup step deletes the temporary package via the GitHub Packages REST API after the workflow completes (on both success and failure).
 - **GitHub_Attestation**: A Sigstore-based attestation created by the `actions/attest@v4` GitHub Action that binds a build artifact to the GitHub Actions workflow run, providing supply-chain provenance via GitHub's artifact attestation feature. Verified by consumers using `gh attestation verify`.
 
 ## Requirements
@@ -36,7 +36,7 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 
 ### Requirement 2: Remote Build Script
 
-**User Story:** As a developer, I want a build script that compiles the Rust project on the Remote_Executor, so that the binary is built inside the attested environment.
+**User Story:** As a developer, I want a build script that compiles the Rust project on the Remote_Executor and uploads the binary to GHCR as a temporary package, so that the binary is built inside the attested environment and can be retrieved by the workflow.
 
 #### Acceptance Criteria
 
@@ -44,10 +44,11 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 2. WHEN executed by the Remote_Executor, THE Build_Script SHALL install the Rust toolchain if not already present.
 3. WHEN executed by the Remote_Executor, THE Build_Script SHALL run `cargo build --release` in the Rust_Project directory.
 4. WHEN the build succeeds, THE Build_Script SHALL compute a SHA-256 digest of the Binary_Artifact and print it to stdout in the format `BINARY_SHA256:<hex_digest>`.
-5. WHEN the build succeeds, THE Build_Script SHALL upload the Binary_Artifact to GitHub Actions Artifacts using the `github_token` and the GitHub Actions Artifacts API, and print the artifact name to stdout in the format `BINARY_ARTIFACT_NAME:<name>`.
-6. IF the Rust toolchain installation fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print a descriptive error to stderr.
-7. IF `cargo build --release` fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print the compiler error output to stderr.
-8. IF the upload to GitHub Actions Artifacts fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print a descriptive error to stderr.
+5. WHEN the build succeeds, THE Build_Script SHALL install the Oras CLI (if not already present), authenticate to GHCR using `GITHUB_TOKEN` via `oras login`, and upload the Binary_Artifact to GHCR as a Temporary_GHCR_Package via `oras push`, printing the full OCI reference to stdout in the format `BINARY_OCI_REF:<reference>`.
+6. THE Build_Script SHALL push the Temporary_GHCR_Package to `ghcr.io/<GITHUB_REPOSITORY>/tmp-build/<tag>` where `<tag>` is derived from the commit SHA and a unique suffix to avoid collisions. THE push SHALL include the `org.opencontainers.image.source` annotation pointing to the repository URL to link the package to the repository for cleanup permissions.
+7. IF the Rust toolchain installation fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print a descriptive error to stderr.
+8. IF `cargo build --release` fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print the compiler error output to stderr.
+9. IF the upload to GHCR fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print a descriptive error to stderr.
 
 ### Requirement 3: GitHub Actions Workflow — Attested Build and Upload
 
@@ -65,20 +66,20 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 8. WHEN the Caller completes with exit code 0, THE Workflow SHALL proceed to the signing and upload steps.
 9. IF the Caller exits with a non-zero exit code, THEN THE Workflow SHALL fail the job and upload any available attestation documents as artifacts.
 
-### Requirement 4: Binary Upload from Executor and Retrieval in Workflow
+### Requirement 4: Binary Retrieval from GHCR and Verification in Workflow
 
-**User Story:** As a developer, I want the build script to upload the compiled binary to GitHub Actions Artifacts from the executor, so that the workflow can download, sign, and publish it.
+**User Story:** As a developer, I want the workflow to download the compiled binary from the temporary GHCR package pushed by the build script, verify its integrity, and then use it for signing and final publishing.
 
 #### Acceptance Criteria
 
-1. WHEN the build succeeds, THE Build_Script SHALL upload the Binary_Artifact to GitHub Actions Artifacts using the `github_token` received in the encrypted execution payload.
-2. THE Build_Script SHALL print the artifact name to stdout in the format `BINARY_ARTIFACT_NAME:<name>`.
+1. WHEN the build succeeds, THE Build_Script SHALL upload the Binary_Artifact to GHCR as a Temporary_GHCR_Package using the `GITHUB_TOKEN` received in the encrypted execution payload.
+2. THE Build_Script SHALL print the OCI reference to stdout in the format `BINARY_OCI_REF:<reference>`.
 3. THE Build_Script SHALL print the SHA-256 digest of the Binary_Artifact to stdout in the format `BINARY_SHA256:<hex_digest>`.
-4. WHEN the Caller completes successfully, THE Workflow SHALL parse the execution stdout to extract the `BINARY_ARTIFACT_NAME` and `BINARY_SHA256` values.
-5. THE Workflow SHALL download the Binary_Artifact from GitHub Actions Artifacts using the `actions/download-artifact@v4` action with the extracted artifact name.
+4. WHEN the Caller completes successfully, THE Workflow SHALL parse the execution stdout to extract the `BINARY_OCI_REF` and `BINARY_SHA256` values.
+5. THE Workflow SHALL pull the Binary_Artifact from GHCR using Oras with the extracted OCI reference.
 6. THE Workflow SHALL compute a SHA-256 digest of the downloaded Binary_Artifact and verify it matches the `BINARY_SHA256` value from the build output.
 7. IF the SHA-256 digest of the downloaded Binary_Artifact does not match the `BINARY_SHA256` value, THEN THE Workflow SHALL fail with a descriptive integrity mismatch error.
-8. IF the `BINARY_ARTIFACT_NAME` or `BINARY_SHA256` markers are missing from the execution stdout, THEN THE Workflow SHALL fail with a descriptive error message.
+8. IF the `BINARY_OCI_REF` or `BINARY_SHA256` markers are missing from the execution stdout, THEN THE Workflow SHALL fail with a descriptive error message.
 
 ### Requirement 5: Attestation-Based Signing
 
@@ -141,12 +142,23 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 
 ### Requirement 10: Script Environment Variable Forwarding
 
-**User Story:** As a developer, I want the GitHub Actions runtime environment variables forwarded to the build script running inside the Remote Executor's Execution_Container, so that the build script can upload artifacts to GitHub Actions Artifacts and interact with GitHub APIs.
+**User Story:** As a developer, I want the GitHub Actions runtime environment variables forwarded to the build script running inside the Remote Executor's Execution_Container, so that the build script can authenticate to GHCR and upload the binary.
 
 #### Acceptance Criteria
 
 1. THE Caller module SHALL accept a `--script-env` CLI argument that can be specified multiple times, each providing a `KEY=VALUE` pair to forward as an environment variable to the Execution_Container.
 2. THE Caller module SHALL include the collected `script_env` dictionary in the encrypted /execute payload alongside the existing fields (repository_url, commit_hash, script_path, github_token, oidc_token, nonce).
-3. THE Workflow SHALL pass `GITHUB_TOKEN`, `GITHUB_RUN_ID`, `GITHUB_REPOSITORY`, `ACTIONS_RUNTIME_TOKEN`, and `ACTIONS_RUNTIME_URL` to the Caller via `--script-env` arguments so they are forwarded to the Execution_Container.
-4. THE Build_Script SHALL receive these environment variables as container environment variables and use them for Rust toolchain installation, artifact upload, and GitHub API interactions.
-5. IF any required environment variable (`GITHUB_TOKEN`, `GITHUB_RUN_ID`, `GITHUB_REPOSITORY`, `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_RUNTIME_URL`) is not set in the Execution_Container, THEN THE Build_Script SHALL exit with a non-zero exit code and a descriptive error message.
+3. THE Workflow SHALL pass `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and the commit SHA to the Caller via `--script-env` arguments so they are forwarded to the Execution_Container.
+4. THE Build_Script SHALL receive these environment variables as container environment variables and use them for GHCR authentication and binary upload.
+5. IF any required environment variable (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`) is not set in the Execution_Container, THEN THE Build_Script SHALL exit with a non-zero exit code and a descriptive error message.
+
+### Requirement 11: Temporary GHCR Package Cleanup
+
+**User Story:** As a developer, I want the temporary GHCR package created by the build script to be automatically deleted after the workflow completes, so that it does not pollute the package registry.
+
+#### Acceptance Criteria
+
+1. THE Workflow SHALL delete the Temporary_GHCR_Package after the final OCI artifact has been pushed (or after any failure), using the `actions/delete-package-versions@v5` GitHub Action.
+2. THE cleanup step SHALL run with `if: always()` and `continue-on-error: true` to ensure the temporary package is removed regardless of whether the workflow succeeds or fails.
+3. IF the cleanup step fails (e.g., package already deleted or permissions issue), THEN THE Workflow SHALL NOT fail the overall job.
+4. THE cleanup step SHALL delete only the specific temporary tag to avoid affecting other temporary builds that may be running concurrently.
