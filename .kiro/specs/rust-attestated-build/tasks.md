@@ -53,8 +53,8 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Handle errors with descriptive stderr messages and non-zero exit codes
     - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 4.1, 4.2, 4.3_
 
-- [ ] 4. Implement workflow helper scripts and parsing logic
-  - [ ] 4.1 Update `scripts/parse_markers.py` — Replace `BINARY_ARTIFACT_NAME` with `BINARY_OCI_REF`
+- [x] 4. Implement workflow helper scripts and parsing logic
+  - [x] 4.1 Update `scripts/parse_markers.py` — Replace `BINARY_ARTIFACT_NAME` with `BINARY_OCI_REF`
     - Implement `parse_sha256_marker(stdout: str) -> str` that extracts `BINARY_SHA256:<value>`
     - Implement `parse_oci_ref_marker(stdout: str) -> str` that extracts `BINARY_OCI_REF:<value>`
     - Remove the old `parse_artifact_name_marker` function
@@ -71,7 +71,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Return JSON-serializable dict matching the provenance manifest schema from the design
     - _Requirements: 5.2_
 
-  - [ ] 4.4 Update property test for stdout marker round-trip (Property 1)
+  - [x] 4.4 Update property test for stdout marker round-trip (Property 1)
     - **Property 1: Stdout marker round-trip**
     - For any valid marker value, embedding it in arbitrary stdout text and parsing back SHALL return the original value
     - Update to test `BINARY_OCI_REF` instead of `BINARY_ARTIFACT_NAME`
@@ -93,7 +93,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Minimum 100 examples via `@settings(max_examples=100)`
     - **Validates: Requirements 5.2**
 
-  - [ ] 4.7 Update unit tests for marker parsing, allowlist validation, and provenance manifest
+  - [x] 4.7 Update unit tests for marker parsing, allowlist validation, and provenance manifest
     - Test `test_parse_sha256_marker` — parse known BINARY_SHA256 marker from sample stdout
     - Test `test_parse_oci_ref_marker` — parse known BINARY_OCI_REF marker
     - Test `test_missing_sha256_marker_raises` — error when marker missing

@@ -1,6 +1,6 @@
 """Parser for stdout markers emitted by the build script.
 
-Extracts ``BINARY_SHA256:<hex_digest>`` and ``BINARY_ARTIFACT_NAME:<name>``
+Extracts ``BINARY_SHA256:<hex_digest>`` and ``BINARY_OCI_REF:<reference>``
 markers from arbitrary stdout text produced by the Remote Executor build
 script.
 """
@@ -14,7 +14,7 @@ import re
 # ---------------------------------------------------------------------------
 
 _SHA256_RE = re.compile(r"^BINARY_SHA256:([0-9a-fA-F]{64})$", re.MULTILINE)
-_ARTIFACT_NAME_RE = re.compile(r"^BINARY_ARTIFACT_NAME:(.+)$", re.MULTILINE)
+_OCI_REF_RE = re.compile(r"^BINARY_OCI_REF:(.+)$", re.MULTILINE)
 
 
 # ---------------------------------------------------------------------------
@@ -53,8 +53,8 @@ def parse_sha256_marker(stdout: str) -> str:
     return match.group(1).lower()
 
 
-def parse_artifact_name_marker(stdout: str) -> str:
-    """Extract the ``BINARY_ARTIFACT_NAME`` value from build stdout.
+def parse_oci_ref_marker(stdout: str) -> str:
+    """Extract the ``BINARY_OCI_REF`` value from build stdout.
 
     Parameters
     ----------
@@ -64,20 +64,21 @@ def parse_artifact_name_marker(stdout: str) -> str:
     Returns
     -------
     str
-        The artifact name (non-empty string without newlines).
+        The OCI reference (non-empty string without newlines), e.g.
+        ``ghcr.io/owner/repo/tmp-build:abc1234-x7k9m2``.
 
     Raises
     ------
     ValueError
-        If the ``BINARY_ARTIFACT_NAME`` marker is missing or the value is
+        If the ``BINARY_OCI_REF`` marker is missing or the value is
         empty.
     """
-    match = _ARTIFACT_NAME_RE.search(stdout)
+    match = _OCI_REF_RE.search(stdout)
     if match is None:
-        raise ValueError("BINARY_ARTIFACT_NAME marker not found in stdout")
-    name = match.group(1).strip()
-    if not name:
+        raise ValueError("BINARY_OCI_REF marker not found in stdout")
+    ref = match.group(1).strip()
+    if not ref:
         raise ValueError(
-            "BINARY_ARTIFACT_NAME marker found but value is empty"
+            "BINARY_OCI_REF marker found but value is empty"
         )
-    return name
+    return ref

@@ -3,7 +3,7 @@
 Validates: Requirements 2.4, 2.5, 3.4, 4.4, 4.7, 4.8, 5.2
 """
 
-from scripts.parse_markers import parse_sha256_marker, parse_artifact_name_marker
+from scripts.parse_markers import parse_sha256_marker, parse_oci_ref_marker
 from scripts.validate_allowlist import validate_server_url
 from scripts.create_provenance import create_provenance_manifest
 
@@ -26,7 +26,7 @@ class TestParseSha256Marker:
             "  Finished release [optimized] target(s) in 12.34s\n"
             f"BINARY_SHA256:{digest}\n"
             "Upload complete.\n"
-            "BINARY_ARTIFACT_NAME:attested-hello-abc123\n"
+            "BINARY_OCI_REF:ghcr.io/owner/repo/tmp-build:abc1234-x7k9m2\n"
         )
         result = parse_sha256_marker(stdout)
         assert result == digest.lower()
@@ -43,34 +43,34 @@ class TestParseSha256Marker:
         stdout = (
             "Compiling attested-hello v0.1.0\n"
             "  Finished release [optimized] target(s) in 12.34s\n"
-            "BINARY_ARTIFACT_NAME:attested-hello-abc123\n"
+            "BINARY_OCI_REF:ghcr.io/owner/repo/tmp-build:abc1234-x7k9m2\n"
         )
         with pytest.raises(ValueError, match="BINARY_SHA256 marker not found"):
             parse_sha256_marker(stdout)
 
 
-class TestParseArtifactNameMarker:
+class TestParseOciRefMarker:
     """Validates: Requirements 2.5, 4.4"""
 
-    def test_parse_artifact_name_marker(self):
-        """Parse a known BINARY_ARTIFACT_NAME marker from sample stdout."""
+    def test_parse_oci_ref_marker(self):
+        """Parse a known BINARY_OCI_REF marker from sample stdout."""
         stdout = (
             "Compiling attested-hello v0.1.0\n"
             "BINARY_SHA256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n"
-            "BINARY_ARTIFACT_NAME:attested-hello-abc123\n"
+            "BINARY_OCI_REF:ghcr.io/owner/repo/tmp-build:abc1234-x7k9m2\n"
             "Done.\n"
         )
-        result = parse_artifact_name_marker(stdout)
-        assert result == "attested-hello-abc123"
+        result = parse_oci_ref_marker(stdout)
+        assert result == "ghcr.io/owner/repo/tmp-build:abc1234-x7k9m2"
 
-    def test_missing_artifact_name_marker_raises(self):
-        """ValueError raised when BINARY_ARTIFACT_NAME marker is missing."""
+    def test_missing_oci_ref_marker_raises(self):
+        """ValueError raised when BINARY_OCI_REF marker is missing."""
         stdout = (
             "Compiling attested-hello v0.1.0\n"
             "BINARY_SHA256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\n"
         )
-        with pytest.raises(ValueError, match="BINARY_ARTIFACT_NAME marker not found"):
-            parse_artifact_name_marker(stdout)
+        with pytest.raises(ValueError, match="BINARY_OCI_REF marker not found"):
+            parse_oci_ref_marker(stdout)
 
 
 # ---------------------------------------------------------------------------
