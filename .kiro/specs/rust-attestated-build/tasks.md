@@ -104,29 +104,29 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Test `test_allowlist_rejects_unlisted` — URL not in allowlist is rejected
     - _Requirements: 2.4, 2.5, 3.4, 4.4, 4.7, 4.8, 5.2_
 
-- [ ] 5. Checkpoint - Ensure all tests pass
+- [x] 5. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 6. Implement GitHub Actions workflow
-  - [ ] 6.1 Create `.github/workflows/attested-rust-build.yml`
+- [x] 6. Implement GitHub Actions workflow
+  - [x] 6.1 Create `.github/workflows/attested-rust-build.yml`
     - Define `workflow_dispatch` trigger with inputs: `server_url` (required), `script_path`, `commit_hash`, `repository_url`, `audience`, `server_url_allowlist`
     - Set permissions: `id-token: write`, `contents: read`, `packages: write`, `attestations: write`
     - Add `ROOT_CERT_PEM` and `EXPECTED_PCRS` environment variables matching the caller project
     - _Requirements: 3.1, 3.2, 8.4, 8.5_
 
-  - [ ] 6.2 Implement input validation step
+  - [x] 6.2 Implement input validation step
     - Validate `server_url` is non-empty
     - Validate `server_url` against `server_url_allowlist` when provided
     - _Requirements: 3.3, 3.4_
 
-  - [ ] 6.3 Implement checkout, dependency installation, and Oras/GHCR setup steps
+  - [x] 6.3 Implement checkout, dependency installation, and Oras/GHCR setup steps
     - Checkout at `commit_hash` or current SHA
     - Install Python 3.11 and caller dependencies via `pip install -e ".[dev]"`
     - Install Oras CLI
     - Login to GHCR with `GITHUB_TOKEN` via `oras login`
     - _Requirements: 3.5, 3.6, 6.1, 6.2_
 
-  - [ ] 6.4 Implement caller invocation step
+  - [x] 6.4 Implement caller invocation step
     - Invoke `python .github/scripts/call_remote_executor` with all required arguments
     - Capture stdout to file via `tee` for marker parsing
     - Pass `--attestation-output-dir attestation-documents`
@@ -134,33 +134,33 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Pass `--script-env` for `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and `COMMIT_SHA`
     - _Requirements: 3.7, 3.8, 10.3_
 
-  - [ ] 6.5 Implement binary retrieval and verification steps
+  - [x] 6.5 Implement binary retrieval and verification steps
     - Parse `BINARY_SHA256` and `BINARY_OCI_REF` from captured stdout
     - Pull temporary binary from GHCR via `oras pull` using the extracted OCI reference
     - Compute SHA-256 of downloaded binary and verify against expected digest
     - Fail with descriptive error on mismatch or missing markers
     - _Requirements: 4.4, 4.5, 4.6, 4.7, 4.8_
 
-  - [ ] 6.6 Implement signing, packaging, and Oras upload steps
+  - [x] 6.6 Implement signing, packaging, and Oras upload steps
     - Create provenance manifest JSON
     - Package attestation bundle as tar.gz
     - Push binary + attestation bundle + provenance as OCI artifact to `ghcr.io/<owner>/<repo>/attested-hello:<short-sha>`
     - _Requirements: 5.1, 5.2, 5.3, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8_
 
-  - [ ] 6.7 Implement GitHub Attestation and summary steps
+  - [x] 6.7 Implement GitHub Attestation and summary steps
     - Use `actions/attest@v4` with `subject-name` (fully-qualified OCI image name, no tag), `subject-digest` (OCI manifest digest in `sha256:<hex>` format), and `push-to-registry: true`
     - Set `continue-on-error: true` on the attest step and assign it a step `id` (e.g. `id: attest`)
     - Add a subsequent step that checks `steps.attest.outcome == 'failure'` and emits a `::warning::` annotation and prints a warning to `$GITHUB_STEP_SUMMARY`
     - Print OCI reference, manifest digest, and attestation status to `$GITHUB_STEP_SUMMARY`
     - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
 
-  - [ ] 6.8 Implement temporary GHCR package cleanup steps
+  - [x] 6.8 Implement temporary GHCR package cleanup steps
     - Add a `run` step with `if: always()` and `continue-on-error: true` that looks up the temporary package version ID by tag using `gh api` and the GitHub Packages REST API
     - Add `actions/delete-package-versions@v5` step with `if: always() && steps.<id>.outputs.version_id != ''` and `continue-on-error: true`
     - Pass the version ID via `package-version-ids`, set `package-name` and `package-type: container`
     - _Requirements: 11.1, 11.2, 11.3, 11.4_
 
-  - [ ] 6.9 Implement attestation document artifact upload step
+  - [x] 6.9 Implement attestation document artifact upload step
     - Upload `attestation-documents/` as GitHub Actions artifact with `if: always()`
     - Include provenance manifest in the upload
     - _Requirements: 7.1, 7.2, 7.3, 3.9_

@@ -129,14 +129,39 @@ jobs:
           pip install -e ".[dev]"
 
       # ------------------------------------------------------------------
-      # Step 5: Run Remote Executor Caller
+      # Step 5: Install Oras CLI
+      # ------------------------------------------------------------------
+      - name: Install Oras CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ORAS_VERSION="1.3.2"
+          curl -fsSLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          tar -xzf "oras_${ORAS_VERSION}_linux_amd64.tar.gz" oras
+          sudo mv oras /usr/local/bin/oras
+          rm -f "oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+          oras version
+
+      # ------------------------------------------------------------------
+      # Step 6: Login to GHCR
+      # ------------------------------------------------------------------
+      - name: Login to GHCR
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "$GITHUB_TOKEN" | oras login ghcr.io --username "${{ github.actor }}" --password-stdin
+          echo "Logged in to GHCR."
+
+      # ------------------------------------------------------------------
+      # Step 7: Run Remote Executor Caller
       # ------------------------------------------------------------------
       - name: Run Remote Executor Caller
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
-          ACTIONS_RUNTIME_URL: ${{ env.ACTIONS_RUNTIME_URL }}
         run: |
           set -euo pipefail
 
@@ -151,14 +176,12 @@ jobs:
             --audience "${{ inputs.audience }}" \
             --attestation-output-dir attestation-documents \
             --script-env "GITHUB_TOKEN=$GITHUB_TOKEN" \
-            --script-env "GITHUB_RUN_ID=${{ github.run_id }}" \
             --script-env "GITHUB_REPOSITORY=${{ github.repository }}" \
-            --script-env "ACTIONS_RUNTIME_TOKEN=$ACTIONS_RUNTIME_TOKEN" \
-            --script-env "ACTIONS_RUNTIME_URL=$ACTIONS_RUNTIME_URL" \
+            --script-env "COMMIT_SHA=${{ inputs.commit_hash || github.sha }}" \
             2>&1 | tee execution-output.txt
 
       # ------------------------------------------------------------------
-      # Step 6: Parse stdout markers
+      # Step 8: Parse stdout markers
       # ------------------------------------------------------------------
       - name: Parse stdout markers
         id: parse_markers
@@ -167,34 +190,40 @@ jobs:
           set -euo pipefail
 
           BINARY_SHA256=$(grep -oP '^BINARY_SHA256:\K[0-9a-fA-F]{64}$' execution-output.txt || true)
-          BINARY_ARTIFACT_NAME=$(grep -oP '^BINARY_ARTIFACT_NAME:\K.+$' execution-output.txt || true)
+          BINARY_OCI_REF=$(grep -oP '^BINARY_OCI_REF:\K.+$' execution-output.txt || true)
 
           if [ -z "$BINARY_SHA256" ]; then
             echo "::error::BINARY_SHA256 marker not found in execution output"
             exit 1
           fi
 
-          if [ -z "$BINARY_ARTIFACT_NAME" ]; then
-            echo "::error::BINARY_ARTIFACT_NAME marker not found in execution output"
+          if [ -z "$BINARY_OCI_REF" ]; then
+            echo "::error::BINARY_OCI_REF marker not found in execution output"
             exit 1
           fi
 
           echo "binary_sha256=${BINARY_SHA256}" >> "$GITHUB_OUTPUT"
-          echo "binary_artifact_name=${BINARY_ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "binary_oci_ref=${BINARY_OCI_REF}" >> "$GITHUB_OUTPUT"
           echo "Found BINARY_SHA256: ${BINARY_SHA256}"
-          echo "Found BINARY_ARTIFACT_NAME: ${BINARY_ARTIFACT_NAME}"
+          echo "Found BINARY_OCI_REF: ${BINARY_OCI_REF}"
 
       # ------------------------------------------------------------------
-      # Step 7: Download binary artifact
+      # Step 9: Pull temporary binary from GHCR
       # ------------------------------------------------------------------
-      - name: Download binary artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ steps.parse_markers.outputs.binary_artifact_name }}
-          path: downloaded-binary/
+      - name: Pull temporary binary from GHCR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BINARY_OCI_REF="${{ steps.parse_markers.outputs.binary_oci_ref }}"
+
+          echo "Pulling temporary binary from ${BINARY_OCI_REF}..."
+          mkdir -p downloaded-binary
+          oras pull "${BINARY_OCI_REF}" --output downloaded-binary/
+          echo "Binary pulled to downloaded-binary/."
 
       # ------------------------------------------------------------------
-      # Step 8: Verify binary integrity
+      # Step 10: Verify binary integrity
       # ------------------------------------------------------------------
       - name: Verify binary integrity
         shell: bash
@@ -223,7 +252,7 @@ jobs:
           chmod +x "$BINARY_PATH"
 
       # ------------------------------------------------------------------
-      # Step 9: Create provenance manifest
+      # Step 11: Create provenance manifest
       # ------------------------------------------------------------------
       - name: Create provenance manifest
         shell: bash
@@ -253,7 +282,7 @@ jobs:
           "
 
       # ------------------------------------------------------------------
-      # Step 10: Package attestation bundle
+      # Step 12: Package attestation bundle
       # ------------------------------------------------------------------
       - name: Package attestation bundle
         shell: bash
@@ -261,33 +290,6 @@ jobs:
           set -euo pipefail
           tar -czf attestation-bundle.tar.gz -C attestation-documents .
           echo "Attestation bundle packaged."
-
-      # ------------------------------------------------------------------
-      # Step 11: Install Oras CLI
-      # ------------------------------------------------------------------
-      - name: Install Oras CLI
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ORAS_VERSION="1.2.0"
-          curl -fsSLO "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
-          tar -xzf "oras_${ORAS_VERSION}_linux_amd64.tar.gz" oras
-          sudo mv oras /usr/local/bin/oras
-          rm -f "oras_${ORAS_VERSION}_linux_amd64.tar.gz"
-          oras version
-
-      # ------------------------------------------------------------------
-      # Step 12: Login to GHCR
-      # ------------------------------------------------------------------
-      - name: Login to GHCR
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          echo "$GITHUB_TOKEN" | oras login ghcr.io --username "${{ github.actor }}" --password-stdin
-          echo "Logged in to GHCR."
 
       # ------------------------------------------------------------------
       # Step 13: Push OCI artifact to GHCR
@@ -383,7 +385,65 @@ jobs:
           echo "| **Binary SHA-256** | \`${{ steps.parse_markers.outputs.binary_sha256 }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
       # ------------------------------------------------------------------
-      # Step 17: Copy provenance manifest into attestation-documents
+      # Step 17: Get temporary package version ID
+      # ------------------------------------------------------------------
+      - name: Get temporary package version ID
+        if: always()
+        id: get_tmp_pkg_version
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          BINARY_OCI_REF="${{ steps.parse_markers.outputs.binary_oci_ref }}"
+
+          if [ -z "$BINARY_OCI_REF" ]; then
+            echo "No BINARY_OCI_REF available, skipping cleanup."
+            exit 0
+          fi
+
+          # Extract tag from OCI ref (everything after the last colon)
+          TAG="${BINARY_OCI_REF##*:}"
+
+          # Extract package name from OCI ref: strip ghcr.io/OWNER/ prefix and :TAG suffix
+          # e.g., ghcr.io/owner/repo/tmp-build:tag -> repo/tmp-build
+          FULL_PATH="${BINARY_OCI_REF#ghcr.io/}"
+          FULL_PATH="${FULL_PATH%:*}"
+          # Remove the owner prefix (everything up to and including the first slash)
+          PACKAGE_NAME="${FULL_PATH#*/}"
+
+          echo "Looking up version ID for package '${PACKAGE_NAME}' tag '${TAG}'..."
+
+          # URL-encode slashes in the package name for the API call
+          ENCODED_PACKAGE_NAME="${PACKAGE_NAME//\//%2F}"
+
+          VERSION_ID=$(gh api \
+            "/orgs/${{ github.repository_owner }}/packages/container/${ENCODED_PACKAGE_NAME}/versions" \
+            --jq ".[] | select(.metadata.container.tags[] == \"${TAG}\") | .id")
+
+          if [ -n "$VERSION_ID" ]; then
+            echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
+            echo "Found version ID: ${VERSION_ID}"
+          else
+            echo "No matching version found for tag '${TAG}'."
+          fi
+
+      # ------------------------------------------------------------------
+      # Step 18: Cleanup temporary GHCR package
+      # ------------------------------------------------------------------
+      - name: Cleanup temporary GHCR package
+        if: always() && steps.get_tmp_pkg_version.outputs.version_id != ''
+        uses: actions/delete-package-versions@v5
+        continue-on-error: true
+        with:
+          package-name: ${{ github.event.repository.name }}/tmp-build
+          package-type: container
+          package-version-ids: ${{ steps.get_tmp_pkg_version.outputs.version_id }}
+
+      # ------------------------------------------------------------------
+      # Step 19: Copy provenance manifest into attestation-documents
       # ------------------------------------------------------------------
       - name: Copy provenance manifest to attestation documents
         if: always()
@@ -396,7 +456,7 @@ jobs:
           fi
 
       # ------------------------------------------------------------------
-      # Step 18: Upload attestation documents artifact
+      # Step 20: Upload attestation documents artifact
       # ------------------------------------------------------------------
       - name: Upload attestation documents
         if: always()
