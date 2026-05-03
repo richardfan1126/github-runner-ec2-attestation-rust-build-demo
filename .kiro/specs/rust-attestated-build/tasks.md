@@ -38,8 +38,8 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Create `rust-project/src/main.rs` that prints a version string and build timestamp
     - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [ ] 3. Implement build script
-  - [ ] 3.1 Create `scripts/build-rust.sh` shell script
+- [x] 3. Implement build script
+  - [x] 3.1 Create `scripts/build-rust.sh` shell script
     - Add `set -euo pipefail` for fail-fast behavior
     - Validate required environment variables: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `COMMIT_SHA`
     - Install Rust toolchain via rustup if not present

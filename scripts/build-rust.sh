@@ -2,24 +2,22 @@
 # build-rust.sh — Build script executed by the Remote Executor inside the enclave.
 #
 # Installs the Rust toolchain, compiles the attested-hello binary, computes its
-# SHA-256 digest, uploads it to GitHub Actions Artifacts via the v3 pipeline
-# artifacts REST API, and prints stdout markers consumed by the workflow.
+# SHA-256 digest, uploads it to GHCR as a temporary OCI package via Oras, and
+# prints stdout markers consumed by the workflow.
 #
-# Note: Uses the v3 API because the enclave environment only has curl available
-# (the v4 API requires the @actions/artifact Node.js package). The v3 API is
-# deprecated but remains functional and is the only option for non-runner
-# environments.
+# The binary is transferred from the enclave to the workflow via a temporary
+# GHCR package. The workflow pulls it back using `oras pull`, verifies the
+# digest, and then pushes the final attested artifact. A cleanup step in the
+# workflow deletes the temporary package after completion.
 #
 # Required environment variables:
-#   GITHUB_TOKEN            — GitHub token passed via the encrypted execution payload
-#   GITHUB_RUN_ID           — The workflow run ID
-#   GITHUB_REPOSITORY       — The repository slug (owner/repo)
-#   ACTIONS_RUNTIME_TOKEN   — Runtime token for the Artifacts API
-#   ACTIONS_RUNTIME_URL     — Base URL for the Actions runtime API
+#   GITHUB_TOKEN      — GitHub token for GHCR authentication (passed via script_env)
+#   GITHUB_REPOSITORY — Repository slug, e.g. owner/repo (passed via script_env)
+#   COMMIT_SHA        — The commit SHA being built (passed via script_env)
 #
 # Stdout markers emitted on success:
 #   BINARY_SHA256:<64-char-hex>
-#   BINARY_ARTIFACT_NAME:<name>
+#   BINARY_OCI_REF:<oci-reference>
 
 set -euo pipefail
 
@@ -27,9 +25,12 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 BINARY_NAME="attested-hello"
-ARTIFACT_NAME="attested-hello-binary"
 RUST_PROJECT_DIR="rust-project"
 BINARY_REL_PATH="${RUST_PROJECT_DIR}/target/release/${BINARY_NAME}"
+ORAS_VERSION="1.3.2"
+ORAS_TARBALL="/tmp/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
+ORAS_BIN="/tmp/oras"
+ORAS_AUTH="/tmp/oras-auth.json"
 
 # ---------------------------------------------------------------------------
 # Helper: print an error message to stderr and exit
@@ -44,11 +45,9 @@ die() {
 # ---------------------------------------------------------------------------
 echo "=== Validating environment ===" >&2
 
-: "${GITHUB_TOKEN:?GITHUB_TOKEN is not set — cannot upload artifact}"
-: "${GITHUB_RUN_ID:?GITHUB_RUN_ID is not set — cannot upload artifact}"
-: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set — cannot upload artifact}"
-: "${ACTIONS_RUNTIME_TOKEN:?ACTIONS_RUNTIME_TOKEN is not set — cannot upload artifact}"
-: "${ACTIONS_RUNTIME_URL:?ACTIONS_RUNTIME_URL is not set — cannot upload artifact}"
+: "${GITHUB_TOKEN:?GITHUB_TOKEN is not set — cannot authenticate to GHCR}"
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set — cannot determine GHCR package path}"
+: "${COMMIT_SHA:?COMMIT_SHA is not set — cannot generate unique tag}"
 
 echo "Environment validated." >&2
 
@@ -100,72 +99,72 @@ fi
 echo "SHA-256: ${BINARY_SHA256}" >&2
 
 # ---------------------------------------------------------------------------
-# Step 5: Upload binary to GitHub Actions Artifacts (v3 pipeline artifacts REST API)
-#
-# The v3 pipeline artifacts API flow:
-#   1. POST to create an artifact → get fileContainerResourceUrl
-#   2. PUT the file to the fileContainerResourceUrl
-#   3. PATCH to finalize the artifact
+# Step 5: Generate a unique tag for the temporary GHCR package
 # ---------------------------------------------------------------------------
-echo "=== Uploading binary to GitHub Actions Artifacts ===" >&2
+echo "=== Generating unique tag ===" >&2
 
-# Normalize the runtime URL (strip trailing slash)
-RUNTIME_URL="${ACTIONS_RUNTIME_URL%/}"
-ARTIFACTS_URL="${RUNTIME_URL}_apis/pipelines/workflows/${GITHUB_RUN_ID}/artifacts?api-version=6.0-preview"
+SHORT_SHA="${COMMIT_SHA:0:7}"
+RANDOM_SUFFIX=$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 6)
+TAG="${SHORT_SHA}-${RANDOM_SUFFIX}"
 
-# Step 5a: Create the artifact
-echo "Creating artifact '${ARTIFACT_NAME}'..." >&2
-
-CREATE_RESPONSE=$(curl -sS --fail-with-body \
-    -X POST \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${ACTIONS_RUNTIME_TOKEN}" \
-    -d "{\"type\":\"actions_storage\",\"name\":\"${ARTIFACT_NAME}\"}" \
-    "${ARTIFACTS_URL}" 2>&1) \
-    || die "Failed to create artifact: ${CREATE_RESPONSE}"
-
-# Extract the fileContainerResourceUrl from the response
-FILE_CONTAINER_URL=$(echo "${CREATE_RESPONSE}" | python3 -c "import sys,json; print(json.load(sys.stdin)['fileContainerResourceUrl'])" 2>/dev/null) \
-    || die "Failed to parse fileContainerResourceUrl from create response: ${CREATE_RESPONSE}"
-
-echo "Artifact container created." >&2
-
-# Step 5b: Upload the binary file
-echo "Uploading binary..." >&2
-
-UPLOAD_URL="${FILE_CONTAINER_URL}?itemPath=${ARTIFACT_NAME}/${BINARY_NAME}"
-
-UPLOAD_RESPONSE=$(curl -sS --fail-with-body \
-    -X PUT \
-    -H "Content-Type: application/octet-stream" \
-    -H "Authorization: Bearer ${ACTIONS_RUNTIME_TOKEN}" \
-    -H "Content-Range: bytes 0-$(($(stat -c%s "${BINARY_REL_PATH}" 2>/dev/null || stat -f%z "${BINARY_REL_PATH}") - 1))/$(($(stat -c%s "${BINARY_REL_PATH}" 2>/dev/null || stat -f%z "${BINARY_REL_PATH}")))" \
-    --data-binary "@${BINARY_REL_PATH}" \
-    "${UPLOAD_URL}" 2>&1) \
-    || die "Failed to upload binary to artifact: ${UPLOAD_RESPONSE}"
-
-echo "Binary uploaded." >&2
-
-# Step 5c: Finalize the artifact (PATCH to confirm upload is complete)
-echo "Finalizing artifact..." >&2
-
-FINALIZE_URL="${ARTIFACTS_URL}"
-BINARY_SIZE=$(stat -c%s "${BINARY_REL_PATH}" 2>/dev/null || stat -f%z "${BINARY_REL_PATH}")
-
-FINALIZE_RESPONSE=$(curl -sS --fail-with-body \
-    -X PATCH \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer ${ACTIONS_RUNTIME_TOKEN}" \
-    -d "{\"size\":${BINARY_SIZE}}" \
-    "${RUNTIME_URL}_apis/pipelines/workflows/${GITHUB_RUN_ID}/artifacts?artifactName=${ARTIFACT_NAME}&api-version=6.0-preview" 2>&1) \
-    || die "Failed to finalize artifact upload: ${FINALIZE_RESPONSE}"
-
-echo "Artifact '${ARTIFACT_NAME}' finalized." >&2
+echo "Tag: ${TAG}" >&2
 
 # ---------------------------------------------------------------------------
-# Step 6: Print stdout markers for the workflow to parse
+# Step 6: Install Oras CLI v1.3.2 (entirely within /tmp/)
+# ---------------------------------------------------------------------------
+echo "=== Installing Oras CLI v${ORAS_VERSION} ===" >&2
+
+if [ -x "${ORAS_BIN}" ]; then
+    echo "Oras CLI already installed at ${ORAS_BIN}" >&2
+else
+    curl -sSL -o "${ORAS_TARBALL}" \
+        "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+        || die "Failed to download Oras CLI v${ORAS_VERSION}"
+
+    tar -zxf "${ORAS_TARBALL}" -C /tmp oras \
+        || die "Failed to extract Oras CLI from tarball"
+
+    rm -f "${ORAS_TARBALL}"
+
+    chmod +x "${ORAS_BIN}"
+    echo "Oras CLI installed at ${ORAS_BIN}" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Step 7: Authenticate to GHCR via Oras
+# ---------------------------------------------------------------------------
+echo "=== Authenticating to GHCR ===" >&2
+
+echo "${GITHUB_TOKEN}" | "${ORAS_BIN}" login ghcr.io \
+    --username github \
+    --password-stdin \
+    --registry-config "${ORAS_AUTH}" \
+    || die "Failed to authenticate to GHCR via oras login"
+
+echo "GHCR authentication succeeded." >&2
+
+# ---------------------------------------------------------------------------
+# Step 8: Push binary to GHCR as a temporary OCI package
+# ---------------------------------------------------------------------------
+echo "=== Pushing binary to GHCR ===" >&2
+
+OCI_REF="ghcr.io/${GITHUB_REPOSITORY}/tmp-build:${TAG}"
+
+# Push from the directory containing the binary so the layer name is just the filename
+(cd "$(dirname "${BINARY_REL_PATH}")" && \
+    "${ORAS_BIN}" push \
+        --registry-config "${ORAS_AUTH}" \
+        "${OCI_REF}" \
+        --annotation "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+        "${BINARY_NAME}:application/octet-stream") \
+    || die "Failed to push binary to GHCR at ${OCI_REF}"
+
+echo "Binary pushed to ${OCI_REF}" >&2
+
+# ---------------------------------------------------------------------------
+# Step 9: Print stdout markers for the workflow to parse
 # ---------------------------------------------------------------------------
 echo "BINARY_SHA256:${BINARY_SHA256}"
-echo "BINARY_ARTIFACT_NAME:${ARTIFACT_NAME}"
+echo "BINARY_OCI_REF:${OCI_REF}"
 
 echo "=== Build complete ===" >&2
