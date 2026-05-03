@@ -41,6 +41,30 @@ die() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: portable HTTP download (prefers curl, falls back to wget)
+# ---------------------------------------------------------------------------
+download() {
+    local url="$1"
+    local dest="${2:-}"  # empty means stdout
+
+    if command -v curl &>/dev/null; then
+        if [ -n "$dest" ]; then
+            curl -sSL -o "$dest" "$url"
+        else
+            curl -sSfL "$url"
+        fi
+    elif command -v wget &>/dev/null; then
+        if [ -n "$dest" ]; then
+            wget -qO "$dest" "$url"
+        else
+            wget -qO- "$url"
+        fi
+    else
+        die "Neither curl nor wget is available — cannot download ${url}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Step 1: Validate required environment variables
 # ---------------------------------------------------------------------------
 echo "=== Validating environment ===" >&2
@@ -60,7 +84,7 @@ if command -v cargo &>/dev/null; then
     echo "Rust toolchain already installed: $(rustc --version)" >&2
 else
     echo "Installing Rust via rustup..." >&2
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable 2>&1 >&2 \
+    download "https://sh.rustup.rs" | sh -s -- -y --default-toolchain stable 2>&1 >&2 \
         || die "Failed to install Rust toolchain via rustup"
     # shellcheck source=/dev/null
     source "${HOME}/.cargo/env"
@@ -117,8 +141,9 @@ echo "=== Installing Oras CLI v${ORAS_VERSION} ===" >&2
 if [ -x "${ORAS_BIN}" ]; then
     echo "Oras CLI already installed at ${ORAS_BIN}" >&2
 else
-    curl -sSL -o "${ORAS_TARBALL}" \
+    download \
         "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+        "${ORAS_TARBALL}" \
         || die "Failed to download Oras CLI v${ORAS_VERSION}"
 
     tar -zxf "${ORAS_TARBALL}" -C /tmp oras \
