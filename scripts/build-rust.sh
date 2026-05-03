@@ -65,6 +65,38 @@ download() {
 }
 
 # ---------------------------------------------------------------------------
+# Step 0: Install required system dependencies
+# ---------------------------------------------------------------------------
+# Minimal container images (e.g. ubuntu:24.04) may lack curl and a C linker,
+# both of which are needed: curl for downloading rustup and oras, and a C
+# compiler/linker for cargo to link the final binary.
+# ---------------------------------------------------------------------------
+echo "=== Installing system dependencies ===" >&2
+
+NEED_INSTALL=false
+command -v curl &>/dev/null || command -v wget &>/dev/null || NEED_INSTALL=true
+command -v cc &>/dev/null || NEED_INSTALL=true
+
+if [ "$NEED_INSTALL" = "true" ]; then
+    echo "Installing missing system dependencies (curl, build-essential)..." >&2
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq >&2
+        apt-get install -y -qq curl build-essential >&2
+    elif command -v dnf &>/dev/null; then
+        dnf install -y -q curl gcc make >&2
+    elif command -v yum &>/dev/null; then
+        yum install -y -q curl gcc make >&2
+    elif command -v apk &>/dev/null; then
+        apk add --no-cache curl build-base >&2
+    else
+        die "No supported package manager found — cannot install dependencies"
+    fi
+    echo "System dependencies installed." >&2
+else
+    echo "System dependencies already available." >&2
+fi
+
+# ---------------------------------------------------------------------------
 # Step 1: Validate required environment variables
 # ---------------------------------------------------------------------------
 echo "=== Validating environment ===" >&2
