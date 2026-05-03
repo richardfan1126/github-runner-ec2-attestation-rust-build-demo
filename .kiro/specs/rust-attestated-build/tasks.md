@@ -165,11 +165,11 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Include provenance manifest in the upload
     - _Requirements: 7.1, 7.2, 7.3, 3.9_
 
-- [ ] 7. Checkpoint - Ensure all tests pass
+- [x] 7. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 8. Write smoke tests for static configuration
-  - [ ] 8.1 Write smoke tests for workflow YAML and project configuration
+- [x] 8. Write smoke tests for static configuration
+  - [x] 8.1 Write smoke tests for workflow YAML and project configuration
     - Test `test_workflow_yaml_inputs` — verify workflow_dispatch inputs in YAML
     - Test `test_workflow_yaml_permissions` — verify permissions in YAML
     - Test `test_workflow_yaml_root_cert` — verify ROOT_CERT_PEM env var in YAML
@@ -180,30 +180,30 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Test `test_gitignore_patterns` — verify .gitignore has required patterns
     - _Requirements: 1.1, 3.1, 3.2, 8.1, 8.2, 8.4, 8.5, 11.1, 11.2_
 
-- [ ] 9. Final checkpoint - Ensure all tests pass
+- [x] 9. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 10. Update script environment variable forwarding
-  - [ ] 10.1 Verify `--script-env` CLI argument in the Caller module
+- [x] 10. Update script environment variable forwarding
+  - [x] 10.1 Verify `--script-env` CLI argument in the Caller module
     - The `--script-env` argument already exists in `cli.py` from the previous implementation
     - Verify it can be specified multiple times, each providing a `KEY=VALUE` pair
     - _Requirements: 10.1_
 
-  - [ ] 10.2 Verify `script_env` is included in the encrypted /execute payload
+  - [x] 10.2 Verify `script_env` is included in the encrypted /execute payload
     - The `script_env` field already exists in `caller.py` `execute()` method from the previous implementation
     - _Requirements: 10.2_
 
-  - [ ] 10.3 Update workflow to pass simplified env vars via `--script-env`
+  - [x] 10.3 Update workflow to pass simplified env vars via `--script-env`
     - In the "Run Remote Executor Caller" step of `attested-rust-build.yml`, pass `--script-env` arguments for `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and `COMMIT_SHA`
     - Remove the old `ACTIONS_RUNTIME_TOKEN` and `ACTIONS_RUNTIME_URL` forwarding (no longer needed)
     - _Requirements: 10.3, 10.4_
 
-  - [ ] 10.4 Update unit tests for `--script-env` argument parsing
+  - [x] 10.4 Update unit tests for `--script-env` argument parsing
     - Verify existing tests still pass with the simplified env var set
     - Update any tests that referenced `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_RUNTIME_URL`
     - _Requirements: 10.1, 10.2_
 
-- [ ] 11. Checkpoint - Ensure all script_env forwarding tests pass
+- [x] 11. Checkpoint - Ensure all script_env forwarding tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

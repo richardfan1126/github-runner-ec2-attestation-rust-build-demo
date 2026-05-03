@@ -116,6 +116,76 @@ class TestWorkflowYamlExpectedPcrs:
             int(value, 16)  # Raises ValueError if not valid hex
 
 
+class TestWorkflowYamlCleanupStep:
+    """Verify cleanup steps in YAML (Requirements 11.1, 11.2)."""
+
+    def test_workflow_yaml_cleanup_step(self, workflow):
+        """Verify cleanup steps: version ID lookup step and actions/delete-package-versions@v5
+        step with if: always() and continue-on-error: true."""
+        steps = workflow["jobs"]["attested-rust-build"]["steps"]
+
+        # --- Find the version ID lookup step ---
+        version_id_step = None
+        for step in steps:
+            if step.get("id") == "get_tmp_pkg_version":
+                version_id_step = step
+                break
+
+        assert version_id_step is not None, (
+            "Workflow must have a step with id 'get_tmp_pkg_version' to look up the temporary package version ID"
+        )
+        # Must run always (even on failure)
+        assert version_id_step.get("if") == "always()", (
+            "Version ID lookup step must have 'if: always()'"
+        )
+        # Must not fail the job
+        assert version_id_step.get("continue-on-error") is True, (
+            "Version ID lookup step must have 'continue-on-error: true'"
+        )
+        # Must use gh api to query package versions
+        run_script = version_id_step.get("run", "")
+        assert "gh api" in run_script, (
+            "Version ID lookup step must use 'gh api' to query package versions"
+        )
+        assert "version_id" in run_script, (
+            "Version ID lookup step must output 'version_id'"
+        )
+
+        # --- Find the delete-package-versions step ---
+        delete_step = None
+        for step in steps:
+            uses = step.get("uses", "")
+            if "actions/delete-package-versions@" in uses:
+                delete_step = step
+                break
+
+        assert delete_step is not None, (
+            "Workflow must have a step using 'actions/delete-package-versions@v5'"
+        )
+        assert "actions/delete-package-versions@v5" in delete_step.get("uses", ""), (
+            "Cleanup step must use actions/delete-package-versions@v5"
+        )
+        # Must run always (conditional on version_id being available)
+        step_if = delete_step.get("if", "")
+        assert "always()" in step_if, (
+            "Cleanup step must include 'always()' in its if condition"
+        )
+        # Must not fail the job
+        assert delete_step.get("continue-on-error") is True, (
+            "Cleanup step must have 'continue-on-error: true'"
+        )
+        # Must specify container package type
+        with_section = delete_step.get("with", {})
+        assert with_section.get("package-type") == "container", (
+            "Cleanup step must specify 'package-type: container'"
+        )
+        # Must reference the version ID from the lookup step
+        version_ids = str(with_section.get("package-version-ids", ""))
+        assert "get_tmp_pkg_version" in version_ids, (
+            "Cleanup step must reference version_id from get_tmp_pkg_version step"
+        )
+
+
 class TestCargoTomlBinaryTarget:
     """Verify Cargo.toml has attested-hello target (Requirement 1.1)."""
 
