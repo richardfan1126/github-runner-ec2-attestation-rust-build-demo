@@ -167,29 +167,29 @@ This plan implements a GitHub Actions workflow and supporting scripts that build
 - [x] 9. Final checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 10. Implement script environment variable forwarding
-  - [ ] 10.1 Add `--script-env` CLI argument to the Caller module
+- [x] 10. Implement script environment variable forwarding
+  - [x] 10.1 Add `--script-env` CLI argument to the Caller module
     - Add a `--script-env` argument to `cli.py` that can be specified multiple times, each providing a `KEY=VALUE` pair
     - Parse the key-value pairs into a `dict[str, str]` and pass them to `caller.run()` and `caller.execute()`
     - _Requirements: 10.1_
 
-  - [ ] 10.2 Include `script_env` in the encrypted /execute payload
+  - [x] 10.2 Include `script_env` in the encrypted /execute payload
     - In `caller.py` `execute()` method, add `script_env` to the `plaintext_payload` dictionary alongside the existing fields (repository_url, commit_hash, script_path, github_token, oidc_token, nonce)
     - _Requirements: 10.2_
 
-  - [ ] 10.3 Update workflow to pass GitHub Actions runtime env vars via `--script-env`
+  - [x] 10.3 Update workflow to pass GitHub Actions runtime env vars via `--script-env`
     - In the "Run Remote Executor Caller" step of `attested-rust-build.yml`, add `--script-env` arguments for `GITHUB_TOKEN`, `GITHUB_RUN_ID`, `GITHUB_REPOSITORY`, `ACTIONS_RUNTIME_TOKEN`, and `ACTIONS_RUNTIME_URL`
     - Use `$GITHUB_TOKEN` env var for the token, and `${{ github.run_id }}`, `${{ github.repository }}`, etc. for the other values
     - Expose `ACTIONS_RUNTIME_TOKEN` and `ACTIONS_RUNTIME_URL` from the runner environment
     - _Requirements: 10.3, 10.4_
 
-  - [ ] 10.4 Write unit tests for `--script-env` argument parsing
+  - [x] 10.4 Write unit tests for `--script-env` argument parsing
     - Test that `--script-env KEY=VALUE` pairs are correctly parsed into a dictionary
     - Test that multiple `--script-env` arguments are accumulated
     - Test that the dictionary is included in the encrypted payload
     - _Requirements: 10.1, 10.2_
 
-- [ ] 11. Checkpoint - Ensure all script_env forwarding tests pass
+- [x] 11. Checkpoint - Ensure all script_env forwarding tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

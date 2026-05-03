@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--attestation-output-dir", default="attestation-documents", help="Directory for saving attestation artifact files")
     parser.add_argument("--allow-missing-output-attestation", action="store_true", default=False, help="Allow run to continue when output attestation is absent (degraded mode)")
     parser.add_argument("--max-output-size", type=int, default=None, help="Maximum accepted size in bytes for stdout/stderr output (truncates oversized output)")
+    parser.add_argument("--script-env", action="append", default=[], metavar="KEY=VALUE", help="Environment variable to forward to the execution container (can be specified multiple times)")
 
     args = parser.parse_args()
 
@@ -54,12 +55,22 @@ def main():
         max_output_size=args.max_output_size,
     )
 
+    # Parse --script-env KEY=VALUE pairs into a dict
+    script_env: dict[str, str] = {}
+    for item in args.script_env:
+        if "=" not in item:
+            print(f"ERROR: --script-env value must be in KEY=VALUE format, got: {item!r}", file=sys.stderr)
+            sys.exit(1)
+        key, _, value = item.partition("=")
+        script_env[key] = value
+
     try:
         exit_code = caller.run(
             repository_url=args.repository_url,
             commit_hash=args.commit_hash,
             script_path=args.script_path,
             github_token=args.github_token,
+            script_env=script_env if script_env else None,
         )
     except CallerError as exc:
         print(f"ERROR [{exc.phase}]: {exc.message}", file=sys.stderr)

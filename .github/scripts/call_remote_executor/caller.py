@@ -357,6 +357,7 @@ class RemoteExecutorCaller:
         commit_hash: str,
         script_path: str,
         github_token: str,
+        script_env: dict[str, str] | None = None,
     ) -> dict:
         """POST /execute - submit encrypted execution request.
 
@@ -383,6 +384,7 @@ class RemoteExecutorCaller:
             "github_token": github_token,
             "oidc_token": self._oidc_token or "",
             "nonce": nonce,
+            "script_env": script_env or {},
         }
         encrypted_payload = self._encryption.encrypt_payload(plaintext_payload)
         client_public_key_b64 = base64.b64encode(
@@ -797,6 +799,7 @@ class RemoteExecutorCaller:
         commit_hash: str,
         script_path: str,
         github_token: str,
+        script_env: dict[str, str] | None = None,
     ) -> int:
         """Orchestrate full flow.
 
@@ -826,7 +829,7 @@ class RemoteExecutorCaller:
 
             # Execute (encrypted) — attestation validation with nonce is done inside execute()
             logger.info("Submitting encrypted execution request...")
-            exec_response = self.execute(repository_url, commit_hash, script_path, github_token)
+            exec_response = self.execute(repository_url, commit_hash, script_path, github_token, script_env=script_env)
             execution_id = exec_response["execution_id"]
             attestation_status = "pass"
             logger.info("Execution submitted: %s", execution_id)

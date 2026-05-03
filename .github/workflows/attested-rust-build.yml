@@ -135,6 +135,8 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTIONS_RUNTIME_TOKEN: ${{ env.ACTIONS_RUNTIME_TOKEN }}
+          ACTIONS_RUNTIME_URL: ${{ env.ACTIONS_RUNTIME_URL }}
         run: |
           set -euo pipefail
 
@@ -148,6 +150,11 @@ jobs:
             --expected-pcrs "$EXPECTED_PCRS" \
             --audience "${{ inputs.audience }}" \
             --attestation-output-dir attestation-documents \
+            --script-env "GITHUB_TOKEN=$GITHUB_TOKEN" \
+            --script-env "GITHUB_RUN_ID=${{ github.run_id }}" \
+            --script-env "GITHUB_REPOSITORY=${{ github.repository }}" \
+            --script-env "ACTIONS_RUNTIME_TOKEN=$ACTIONS_RUNTIME_TOKEN" \
+            --script-env "ACTIONS_RUNTIME_URL=$ACTIONS_RUNTIME_URL" \
             2>&1 | tee execution-output.txt
 
       # ------------------------------------------------------------------
