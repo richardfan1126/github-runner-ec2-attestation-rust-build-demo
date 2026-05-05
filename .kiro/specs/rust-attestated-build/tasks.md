@@ -42,20 +42,21 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Create `rust-project/src/main.rs` that prints a version string and build timestamp
     - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [x] 3. Implement build script
-  - [x] 3.1 Create `scripts/build-rust.sh` shell script
+- [ ] 3. Implement build script
+  - [ ] 3.1 Update `scripts/build-rust.sh` shell script for `/workspace` read-only constraint
     - Add `set -euo pipefail` for fail-fast behavior
     - Validate required environment variables: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `COMMIT_SHA`
-    - Install Rust toolchain via rustup if not present
-    - Run `cargo build --release` in the `rust-project/` directory
-    - Compute SHA-256 of the binary and print `BINARY_SHA256:<hex_digest>` to stdout
+    - Install Rust toolchain via rustup if not present (set `RUSTUP_HOME=/tmp/.rustup` and `CARGO_HOME=/tmp/.cargo` since `/workspace` is read-only)
+    - Copy Rust project source from `/workspace/rust-project/` to `/tmp/rust-project/` (since `/workspace` is read-only)
+    - Run `cargo build --release` in `/tmp/rust-project/`
+    - Compute SHA-256 of the binary at `/tmp/rust-project/target/release/attested-hello` and print `BINARY_SHA256:<hex_digest>` to stdout
     - Generate a unique tag: `<short-sha>-<random-suffix>` (e.g., `abc1234-x7k9m2`)
     - Install Oras CLI v1.3.2 (download tarball to `/tmp/`, extract binary to `/tmp/oras`, remove tarball)
     - Authenticate to GHCR: `echo $GITHUB_TOKEN | /tmp/oras login ghcr.io --username github --password-stdin --registry-config /tmp/oras-auth.json`
-    - Push binary to GHCR with repository link annotation: `/tmp/oras push --registry-config /tmp/oras-auth.json ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag> --annotation "org.opencontainers.image.source=https://github.com/<GITHUB_REPOSITORY>" attested-hello:application/octet-stream`
+    - Push binary to GHCR with repository link annotation: `/tmp/oras push --registry-config /tmp/oras-auth.json ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag> --annotation "org.opencontainers.image.source=https://github.com/<GITHUB_REPOSITORY>" /tmp/rust-project/target/release/attested-hello:application/octet-stream`
     - Print `BINARY_OCI_REF:<reference>` to stdout
     - Handle errors with descriptive stderr messages and non-zero exit codes
-    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 4.1, 4.2, 4.3_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11, 4.1, 4.2, 4.3_
 
 - [x] 4. Implement workflow helper scripts and parsing logic
   - [x] 4.1 Update `scripts/parse_markers.py` — Replace `BINARY_ARTIFACT_NAME` with `BINARY_OCI_REF`
@@ -108,7 +109,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Test `test_allowlist_rejects_unlisted` — URL not in allowlist is rejected
     - _Requirements: 2.4, 2.5, 3.4, 4.4, 4.7, 4.8, 5.2_
 
-- [x] 5. Checkpoint - Ensure all tests pass
+- [ ] 5. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 6. Implement GitHub Actions workflow
@@ -221,6 +222,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - The build script uses shell (bash) as it runs on the Remote Executor
 - The Rust project is minimal — just enough to produce a binary for the demo
 - The build script uses Oras CLI v1.3.2 to push to GHCR — this only requires `GITHUB_TOKEN` (no `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_RUNTIME_URL`). The build script downloads and installs Oras entirely within `/tmp/` (the only writable directory in the enclave), using `--registry-config /tmp/oras-auth.json` for credential storage. The `org.opencontainers.image.source` annotation is included to link the package to the repository for `GITHUB_TOKEN` delete permissions.
+- `/workspace` is mounted read-only inside the Execution_Container. The build script must copy source from `/workspace/rust-project/` to `/tmp/rust-project/` before compiling, and set `RUSTUP_HOME`/`CARGO_HOME` to `/tmp/` paths.
 - The temporary GHCR package is cleaned up via `actions/delete-package-versions@v5` after the workflow completes
 - Tasks from the previous implementation that are unchanged (project structure, caller module copy, Rust project, allowlist validation, provenance manifest) are marked as `[x]` (already done)
 - The `/output` endpoint on the Remote Executor no longer requires or validates an OIDC token (upstream commit b846e4b). Authentication is provided solely by possession of the execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange on `/execute`. The caller's `poll_output` method should send only `nonce` in the encrypted payload. The server returns 400 for decryption failures and 404 for unknown execution IDs — it does not return 401/403 on this endpoint, making the caller's 401/403 handling dead code.

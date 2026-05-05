@@ -8,8 +8,9 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 
 - **Workflow**: A GitHub Actions workflow definition (YAML) that orchestrates the end-to-end build, sign, and upload pipeline.
 - **Caller**: The Python-based client (`call_remote_executor` module) that communicates with the Remote Executor server via the attested channel (health check, OIDC, attestation, PQ_Hybrid_KEM, encrypted execution, polling).
-- **Remote_Executor**: The server-side component running on an AWS Nitro Enclave that executes scripts in an attested environment and returns output with attestation documents.
-- **Build_Script**: A shell script committed to the repository that the Remote_Executor clones and runs to compile the Rust binary.
+- **Remote_Executor**: The server-side component running on an AWS Nitro Enclave that executes scripts in an attested environment and returns output with attestation documents. The Remote_Executor mounts the cloned project repository read-only at `/workspace` inside the Execution_Container.
+- **Build_Script**: A shell script committed to the repository that the Remote_Executor clones and runs to compile the Rust binary. The Build_Script executes with `/workspace` as its working directory, where the project repository is mounted read-only. The Build_Script must copy source files to `/tmp/` for compilation since `/workspace` is not writable.
+- **Execution_Container**: The Docker container inside the Remote_Executor's enclave environment where the Build_Script runs. The project repository is mounted read-only at `/workspace`, making the Rust project source available at `/workspace/rust-project/`. Only `/tmp/` is writable inside the Execution_Container.
 - **Attestation_Document**: A COSE Sign1 document produced by the AWS Nitro Enclave that cryptographically proves the execution environment identity and integrity.
 - **Binary_Artifact**: The compiled Rust executable produced by the Build_Script on the Remote_Executor.
 - **Signing_Script**: A script that attaches the Attestation_Document to the Binary_Artifact as a cryptographic provenance record.
@@ -41,14 +42,16 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 #### Acceptance Criteria
 
 1. THE Build_Script SHALL be a shell script located at `scripts/build-rust.sh` in the repository.
-2. WHEN executed by the Remote_Executor, THE Build_Script SHALL install the Rust toolchain if not already present.
-3. WHEN executed by the Remote_Executor, THE Build_Script SHALL run `cargo build --release` in the Rust_Project directory.
-4. WHEN the build succeeds, THE Build_Script SHALL compute a SHA-256 digest of the Binary_Artifact and print it to stdout in the format `BINARY_SHA256:<hex_digest>`.
-5. WHEN the build succeeds, THE Build_Script SHALL install the Oras CLI (if not already present), authenticate to GHCR using `GITHUB_TOKEN` via `oras login`, and upload the Binary_Artifact to GHCR as a Temporary_GHCR_Package via `oras push`, printing the full OCI reference to stdout in the format `BINARY_OCI_REF:<reference>`.
-6. THE Build_Script SHALL push the Temporary_GHCR_Package to `ghcr.io/<GITHUB_REPOSITORY>/tmp-build/<tag>` where `<tag>` is derived from the commit SHA and a unique suffix to avoid collisions. THE push SHALL include the `org.opencontainers.image.source` annotation pointing to the repository URL to link the package to the repository for cleanup permissions.
-7. IF the Rust toolchain installation fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print a descriptive error to stderr.
-8. IF `cargo build --release` fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print the compiler error output to stderr.
-9. IF the upload to GHCR fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print a descriptive error to stderr.
+2. WHEN executed by the Remote_Executor, THE Build_Script SHALL have `/workspace` as its working directory, where the project repository is mounted read-only inside the Execution_Container.
+3. SINCE `/workspace` is read-only, THE Build_Script SHALL copy the Rust project source from `/workspace/rust-project/` to a writable location under `/tmp/` before compiling.
+4. WHEN executed by the Remote_Executor, THE Build_Script SHALL install the Rust toolchain if not already present.
+5. WHEN executed by the Remote_Executor, THE Build_Script SHALL run `cargo build --release` in the copied Rust project directory under `/tmp/`.
+6. WHEN the build succeeds, THE Build_Script SHALL compute a SHA-256 digest of the Binary_Artifact and print it to stdout in the format `BINARY_SHA256:<hex_digest>`.
+7. WHEN the build succeeds, THE Build_Script SHALL install the Oras CLI (if not already present), authenticate to GHCR using `GITHUB_TOKEN` via `oras login`, and upload the Binary_Artifact to GHCR as a Temporary_GHCR_Package via `oras push`, printing the full OCI reference to stdout in the format `BINARY_OCI_REF:<reference>`.
+8. THE Build_Script SHALL push the Temporary_GHCR_Package to `ghcr.io/<GITHUB_REPOSITORY>/tmp-build/<tag>` where `<tag>` is derived from the commit SHA and a unique suffix to avoid collisions. THE push SHALL include the `org.opencontainers.image.source` annotation pointing to the repository URL to link the package to the repository for cleanup permissions.
+9. IF the Rust toolchain installation fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print a descriptive error to stderr.
+10. IF `cargo build --release` fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print the compiler error output to stderr.
+11. IF the upload to GHCR fails, THEN THE Build_Script SHALL exit with a non-zero exit code and print a descriptive error to stderr.
 
 ### Requirement 3: GitHub Actions Workflow — Attested Build and Upload
 
@@ -149,7 +152,7 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 1. THE Caller module SHALL accept a `--script-env` CLI argument that can be specified multiple times, each providing a `KEY=VALUE` pair to forward as an environment variable to the Execution_Container.
 2. THE Caller module SHALL include the collected `script_env` dictionary in the encrypted /execute payload alongside the existing fields (repository_url, commit_hash, script_path, github_token, oidc_token, nonce).
 3. THE Workflow SHALL pass `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and the commit SHA to the Caller via `--script-env` arguments so they are forwarded to the Execution_Container.
-4. THE Build_Script SHALL receive these environment variables as container environment variables and use them for GHCR authentication and binary upload.
+4. THE Build_Script SHALL receive these environment variables as container environment variables inside the Execution_Container (where the project is mounted read-only at `/workspace` and `/tmp/` is the writable directory) and use them for GHCR authentication and binary upload.
 5. IF any required environment variable (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`) is not set in the Execution_Container, THEN THE Build_Script SHALL exit with a non-zero exit code and a descriptive error message.
 
 ### Requirement 11: Temporary GHCR Package Cleanup

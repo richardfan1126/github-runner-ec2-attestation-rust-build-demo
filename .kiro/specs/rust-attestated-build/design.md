@@ -84,8 +84,8 @@ sequenceDiagram
     RE-->>CALLER: attestation_document + server_public_key
     CALLER->>CALLER: Validate attestation, derive shared key
     CALLER->>RE: POST /execute (encrypted payload with github_token + script_env)
-    RE->>BS: Clone repo, inject script_env as container env vars, run build-rust.sh
-    BS->>BS: Install Rust, cargo build --release
+    RE->>BS: Clone repo (mounted read-only at /workspace), inject script_env as container env vars, run build-rust.sh
+    BS->>BS: Copy source to /tmp/, install Rust, cargo build --release
     BS->>BS: Compute SHA-256 of binary
     BS->>GHCR: oras push binary as temp OCI package (using GITHUB_TOKEN)
     BS-->>RE: stdout with BINARY_SHA256 + BINARY_OCI_REF
@@ -114,23 +114,25 @@ A minimal Rust project that compiles into the `attested-hello` binary.
 - `rust-project/Cargo.toml` — Binary target `attested-hello`
 - `rust-project/src/main.rs` — Prints version string and build timestamp
 
-**Interface:** Compiled via `cargo build --release`, produces `rust-project/target/release/attested-hello`.
+**Interface:** Source is at `/workspace/rust-project/` (read-only). The build script copies it to `/tmp/rust-project/` and compiles via `cargo build --release`, producing `/tmp/rust-project/target/release/attested-hello`.
 
 ### 2. Build Script (`scripts/build-rust.sh`)
 
 Shell script executed by the Remote Executor inside the enclave.
 
 **Inputs (environment):**
-- Working directory: repository root (cloned by Remote Executor)
+- Working directory: `/workspace` (repository root, mounted read-only by Remote Executor)
 - `GITHUB_TOKEN` — passed via the encrypted execution payload's `script_env` dictionary
 - `GITHUB_REPOSITORY` — the repository slug, passed via the encrypted execution payload's `script_env` dictionary
 - `COMMIT_SHA` — the commit SHA being built, passed via the encrypted execution payload's `script_env` dictionary
+
+**Note on `/workspace` read-only constraint:** The Execution_Container mounts the cloned project repository at `/workspace` as a read-only filesystem. The build script cannot write to `/workspace` (no `target/` directory, no file modifications). All write operations — Rust compilation output, Oras CLI installation, credential storage — must use `/tmp/`, which is the only writable directory. The build script copies the Rust project source to `/tmp/rust-project/` before compiling.
 
 **Note on environment variable forwarding:** The environment variables are forwarded from the GitHub Actions runner to the Execution_Container via the `script_env` field in the encrypted /execute payload. The caller module includes them in the `script_env` dictionary, the Remote Executor server extracts and sanitizes the dictionary, and the Script_Executor injects them as container environment variables. This is necessary because the Execution_Container runs in an isolated Docker environment with no access to the GitHub Actions runner's environment.
 
 **Note on GHCR upload mechanism:** The build script installs the Oras CLI and uses `oras login` + `oras push` to upload the binary to GHCR. Oras handles the OCI Distribution API details (blob upload, manifest creation) transparently. Authentication uses `GITHUB_TOKEN` as the password with `oras login ghcr.io`. This avoids the deprecated GitHub Actions Artifacts v3 API and eliminates the need for `ACTIONS_RUNTIME_TOKEN` and `ACTIONS_RUNTIME_URL`.
 
-**Note on Oras installation in the enclave:** The enclave's Execution_Container only has `/tmp/` as a writable directory. The build script downloads the Oras release tarball to `/tmp/`, extracts the `oras` binary to `/tmp/oras`, removes the tarball, and invokes Oras by absolute path (`/tmp/oras`). The `oras login` command stores credentials in `~/.docker/config.json` by default; since the home directory may not be writable, the `--registry-config /tmp/oras-auth.json` flag is used to store credentials in `/tmp/` instead. The latest stable version is 1.3.2.
+**Note on Oras installation in the enclave:** The enclave's Execution_Container only has `/tmp/` as a writable directory (since `/workspace` is mounted read-only). The build script downloads the Oras release tarball to `/tmp/`, extracts the `oras` binary to `/tmp/oras`, removes the tarball, and invokes Oras by absolute path (`/tmp/oras`). The `oras login` command stores credentials in `~/.docker/config.json` by default; since the home directory may not be writable, the `--registry-config /tmp/oras-auth.json` flag is used to store credentials in `/tmp/` instead. The latest stable version is 1.3.2.
 
 **Outputs (stdout markers):**
 - `BINARY_SHA256:<hex_digest>` — SHA-256 of the compiled binary
@@ -138,20 +140,21 @@ Shell script executed by the Remote Executor inside the enclave.
 
 **Algorithm:**
 ```
-1. Install Rust toolchain via rustup (if not present)
-2. cd rust-project/
-3. cargo build --release
-4. Compute: sha256sum target/release/attested-hello → BINARY_SHA256
-5. Generate unique tag: <short-sha>-<random-suffix>
-6. Install Oras CLI v1.3.2 (download and extract entirely within /tmp/):
+1. Install Rust toolchain via rustup (if not present; RUSTUP_HOME and CARGO_HOME set to /tmp/)
+2. Copy Rust project source to writable location: cp -r /workspace/rust-project /tmp/rust-project
+3. cd /tmp/rust-project/
+4. cargo build --release
+5. Compute: sha256sum target/release/attested-hello → BINARY_SHA256
+6. Generate unique tag: <short-sha>-<random-suffix>
+7. Install Oras CLI v1.3.2 (download and extract entirely within /tmp/):
    curl -L -o /tmp/oras_1.3.2_linux_amd64.tar.gz https://github.com/oras-project/oras/releases/download/v1.3.2/oras_1.3.2_linux_amd64.tar.gz
    tar -zxf /tmp/oras_1.3.2_linux_amd64.tar.gz -C /tmp oras
    rm -f /tmp/oras_1.3.2_linux_amd64.tar.gz
-7. Login to GHCR: echo $GITHUB_TOKEN | /tmp/oras login ghcr.io --username github --password-stdin --registry-config /tmp/oras-auth.json
-8. Push binary: /tmp/oras push --registry-config /tmp/oras-auth.json ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag> \
+8. Login to GHCR: echo $GITHUB_TOKEN | /tmp/oras login ghcr.io --username github --password-stdin --registry-config /tmp/oras-auth.json
+9. Push binary: /tmp/oras push --registry-config /tmp/oras-auth.json ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag> \
      --annotation "org.opencontainers.image.source=https://github.com/<GITHUB_REPOSITORY>" \
-     target/release/attested-hello:application/octet-stream
-9. Print BINARY_SHA256:<digest> and BINARY_OCI_REF:ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag>
+     /tmp/rust-project/target/release/attested-hello:application/octet-stream
+10. Print BINARY_SHA256:<digest> and BINARY_OCI_REF:ghcr.io/<GITHUB_REPOSITORY>/tmp-build:<tag>
 ```
 
 **Error handling:** Each step checks exit codes. Failures print descriptive errors to stderr and exit non-zero.
@@ -387,6 +390,7 @@ Three areas of this feature contain pure logic suitable for property-based testi
 | Error Condition | Behavior | Exit Code |
 |---|---|---|
 | Rust toolchain installation fails | Print descriptive error to stderr | Non-zero |
+| Source copy to `/tmp/` fails | Print descriptive error to stderr | Non-zero |
 | `cargo build --release` fails | Print compiler error output to stderr | Non-zero |
 | GHCR authentication fails (`oras login`) | Print auth error to stderr | Non-zero |
 | GHCR upload fails (`oras push`) | Print upload error to stderr | Non-zero |
