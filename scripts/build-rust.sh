@@ -10,6 +10,10 @@
 # digest, and then pushes the final attested artifact. A cleanup step in the
 # workflow deletes the temporary package after completion.
 #
+# IMPORTANT: /workspace is mounted READ-ONLY inside the Execution_Container.
+# All write operations (Rust compilation, Oras installation, credential storage)
+# must use /tmp/, which is the only writable directory.
+#
 # Required environment variables:
 #   GITHUB_TOKEN      — GitHub token for GHCR authentication (passed via script_env)
 #   GITHUB_REPOSITORY — Repository slug, e.g. owner/repo (passed via script_env)
@@ -25,12 +29,17 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 BINARY_NAME="attested-hello"
-RUST_PROJECT_DIR="rust-project"
-BINARY_REL_PATH="${RUST_PROJECT_DIR}/target/release/${BINARY_NAME}"
+WORKSPACE_RUST_PROJECT="/workspace/rust-project"
+TMP_RUST_PROJECT="/tmp/rust-project"
+BINARY_PATH="${TMP_RUST_PROJECT}/target/release/${BINARY_NAME}"
 ORAS_VERSION="1.3.2"
 ORAS_TARBALL="/tmp/oras_${ORAS_VERSION}_linux_amd64.tar.gz"
 ORAS_BIN="/tmp/oras"
 ORAS_AUTH="/tmp/oras-auth.json"
+
+# Rust toolchain paths — /workspace is read-only, so use /tmp/
+export RUSTUP_HOME="/tmp/.rustup"
+export CARGO_HOME="/tmp/.cargo"
 
 # ---------------------------------------------------------------------------
 # Helper: print an error message to stderr and exit
@@ -111,42 +120,56 @@ echo "Environment validated." >&2
 # Step 2: Install Rust toolchain via rustup (if not present)
 # ---------------------------------------------------------------------------
 echo "=== Installing Rust toolchain ===" >&2
+echo "RUSTUP_HOME=${RUSTUP_HOME}" >&2
+echo "CARGO_HOME=${CARGO_HOME}" >&2
 
-if command -v cargo &>/dev/null; then
-    echo "Rust toolchain already installed: $(rustc --version)" >&2
+if [ -x "${CARGO_HOME}/bin/cargo" ]; then
+    echo "Rust toolchain already installed: $("${CARGO_HOME}/bin/rustc" --version)" >&2
 else
     echo "Installing Rust via rustup..." >&2
     download "https://sh.rustup.rs" | sh -s -- -y --default-toolchain stable 2>&1 >&2 \
         || die "Failed to install Rust toolchain via rustup"
-    # shellcheck source=/dev/null
-    source "${HOME}/.cargo/env"
-    echo "Rust installed: $(rustc --version)" >&2
+    echo "Rust installed: $("${CARGO_HOME}/bin/rustc" --version)" >&2
 fi
 
+# Add cargo bin to PATH
+export PATH="${CARGO_HOME}/bin:${PATH}"
+
 # ---------------------------------------------------------------------------
-# Step 3: Build the Rust project in release mode
+# Step 3: Copy Rust project source to /tmp/ (since /workspace is read-only)
+# ---------------------------------------------------------------------------
+echo "=== Copying Rust project to /tmp/ ===" >&2
+
+if [ ! -d "${WORKSPACE_RUST_PROJECT}" ]; then
+    die "Rust project directory '${WORKSPACE_RUST_PROJECT}' not found"
+fi
+
+rm -rf "${TMP_RUST_PROJECT}"
+cp -r "${WORKSPACE_RUST_PROJECT}" "${TMP_RUST_PROJECT}" \
+    || die "Failed to copy Rust project from ${WORKSPACE_RUST_PROJECT} to ${TMP_RUST_PROJECT}"
+
+echo "Rust project copied to ${TMP_RUST_PROJECT}" >&2
+
+# ---------------------------------------------------------------------------
+# Step 4: Build the Rust project in release mode
 # ---------------------------------------------------------------------------
 echo "=== Building Rust project ===" >&2
 
-if [ ! -d "${RUST_PROJECT_DIR}" ]; then
-    die "Rust project directory '${RUST_PROJECT_DIR}' not found in $(pwd)"
-fi
-
-(cd "${RUST_PROJECT_DIR}" && cargo build --release 2>&1 >&2) \
+(cd "${TMP_RUST_PROJECT}" && cargo build --release 2>&1 >&2) \
     || die "cargo build --release failed"
 
-if [ ! -f "${BINARY_REL_PATH}" ]; then
-    die "Expected binary not found at ${BINARY_REL_PATH}"
+if [ ! -f "${BINARY_PATH}" ]; then
+    die "Expected binary not found at ${BINARY_PATH}"
 fi
 
-echo "Build succeeded: ${BINARY_REL_PATH}" >&2
+echo "Build succeeded: ${BINARY_PATH}" >&2
 
 # ---------------------------------------------------------------------------
-# Step 4: Compute SHA-256 digest of the binary
+# Step 5: Compute SHA-256 digest of the binary
 # ---------------------------------------------------------------------------
 echo "=== Computing SHA-256 digest ===" >&2
 
-BINARY_SHA256=$(sha256sum "${BINARY_REL_PATH}" | awk '{print $1}')
+BINARY_SHA256=$(sha256sum "${BINARY_PATH}" | awk '{print $1}')
 
 if [ -z "${BINARY_SHA256}" ] || [ "${#BINARY_SHA256}" -ne 64 ]; then
     die "Failed to compute valid SHA-256 digest"
@@ -155,7 +178,7 @@ fi
 echo "SHA-256: ${BINARY_SHA256}" >&2
 
 # ---------------------------------------------------------------------------
-# Step 5: Generate a unique tag for the temporary GHCR package
+# Step 6: Generate a unique tag for the temporary GHCR package
 # ---------------------------------------------------------------------------
 echo "=== Generating unique tag ===" >&2
 
@@ -166,7 +189,7 @@ TAG="${SHORT_SHA}-${RANDOM_SUFFIX}"
 echo "Tag: ${TAG}" >&2
 
 # ---------------------------------------------------------------------------
-# Step 6: Install Oras CLI v1.3.2 (entirely within /tmp/)
+# Step 7: Install Oras CLI v1.3.2 (entirely within /tmp/)
 # ---------------------------------------------------------------------------
 echo "=== Installing Oras CLI v${ORAS_VERSION} ===" >&2
 
@@ -188,7 +211,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 7: Authenticate to GHCR via Oras
+# Step 8: Authenticate to GHCR via Oras
 # ---------------------------------------------------------------------------
 echo "=== Authenticating to GHCR ===" >&2
 
@@ -201,14 +224,14 @@ echo "${GITHUB_TOKEN}" | "${ORAS_BIN}" login ghcr.io \
 echo "GHCR authentication succeeded." >&2
 
 # ---------------------------------------------------------------------------
-# Step 8: Push binary to GHCR as a temporary OCI package
+# Step 9: Push binary to GHCR as a temporary OCI package
 # ---------------------------------------------------------------------------
 echo "=== Pushing binary to GHCR ===" >&2
 
 OCI_REF="ghcr.io/${GITHUB_REPOSITORY}/tmp-build:${TAG}"
 
 # Push from the directory containing the binary so the layer name is just the filename
-(cd "$(dirname "${BINARY_REL_PATH}")" && \
+(cd "$(dirname "${BINARY_PATH}")" && \
     "${ORAS_BIN}" push \
         --registry-config "${ORAS_AUTH}" \
         "${OCI_REF}" \
@@ -219,7 +242,7 @@ OCI_REF="ghcr.io/${GITHUB_REPOSITORY}/tmp-build:${TAG}"
 echo "Binary pushed to ${OCI_REF}" >&2
 
 # ---------------------------------------------------------------------------
-# Step 9: Print stdout markers for the workflow to parse
+# Step 10: Print stdout markers for the workflow to parse
 # ---------------------------------------------------------------------------
 echo "BINARY_SHA256:${BINARY_SHA256}"
 echo "BINARY_OCI_REF:${OCI_REF}"

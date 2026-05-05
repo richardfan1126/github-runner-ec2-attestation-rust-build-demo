@@ -42,8 +42,8 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Create `rust-project/src/main.rs` that prints a version string and build timestamp
     - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-- [ ] 3. Implement build script
-  - [ ] 3.1 Update `scripts/build-rust.sh` shell script for `/workspace` read-only constraint
+- [x] 3. Implement build script
+  - [x] 3.1 Update `scripts/build-rust.sh` shell script for `/workspace` read-only constraint
     - Add `set -euo pipefail` for fail-fast behavior
     - Validate required environment variables: `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `COMMIT_SHA`
     - Install Rust toolchain via rustup if not present (set `RUSTUP_HOME=/tmp/.rustup` and `CARGO_HOME=/tmp/.cargo` since `/workspace` is read-only)
@@ -109,7 +109,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Test `test_allowlist_rejects_unlisted` — URL not in allowlist is rejected
     - _Requirements: 2.4, 2.5, 3.4, 4.4, 4.7, 4.8, 5.2_
 
-- [ ] 5. Checkpoint - Ensure all tests pass
+- [x] 5. Checkpoint - Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 - [x] 6. Implement GitHub Actions workflow
