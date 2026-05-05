@@ -526,8 +526,13 @@ class RemoteExecutorCaller:
     def poll_output(self, execution_id: str) -> dict:
         """Poll POST /execution/{id}/output with encrypted requests until complete or timeout.
 
-        Each poll request generates a unique nonce, encrypts {oidc_token, nonce}
-        via HPKE, and sends {encrypted_payload} (no client_public_key, no Authorization header).
+        Authentication is via Shared_Key possession — the server authenticates
+        the caller by successfully decrypting the encrypted payload using the
+        execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange
+        on /execute. No OIDC token is needed for this endpoint.
+
+        Each poll request generates a unique nonce, encrypts {nonce} via HPKE,
+        and sends {encrypted_payload} (no client_public_key, no Authorization header).
         Decrypts the encrypted response from the server.
 
         Validates output attestation inline on each poll response:
@@ -571,7 +576,6 @@ class RemoteExecutorCaller:
 
             nonce = self.generate_nonce()
             plaintext_payload = {
-                "oidc_token": self._oidc_token or "",
                 "nonce": nonce,
             }
             encrypted_payload = self._encryption.encrypt_payload(plaintext_payload)
@@ -590,19 +594,6 @@ class RemoteExecutorCaller:
                 logger.warning("Poll request error (%d/%d): %s", consecutive_errors, self.max_retries, exc)
                 time.sleep(self.poll_interval)
                 continue
-
-            if response.status_code == 401:
-                raise CallerError(
-                    message="Authentication failure: server returned HTTP 401 Unauthorized",
-                    phase="polling",
-                    details={"status_code": 401, "body": response.text},
-                )
-            if response.status_code == 403:
-                raise CallerError(
-                    message="Repository is not authorized or the OIDC repository claim does not match the requested repository_url: server returned HTTP 403 Forbidden",
-                    phase="polling",
-                    details={"status_code": 403, "body": response.text},
-                )
 
             if response.status_code != 200:
                 consecutive_errors += 1

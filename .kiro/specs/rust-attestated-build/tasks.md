@@ -27,8 +27,8 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Document how to verify the OCI artifact using `oras pull` and `gh attestation verify`
     - _Requirements: 8.3_
 
-- [ ] 2. Copy caller module and create Rust project
-  - [ ] 2.1 Copy `call_remote_executor` module to `.github/scripts/call_remote_executor/` and update `poll_output`
+- [x] 2. Copy caller module and create Rust project
+  - [x] 2.1 Copy `call_remote_executor` module to `.github/scripts/call_remote_executor/` and update `poll_output`
     - Copy all Python files from `github-runner-ec2-attestation-caller/.github/scripts/call_remote_executor/`
     - Files: `__init__.py`, `__main__.py`, `cli.py`, `caller.py`, `encryption.py`, `attestation.py`, `artifact.py`, `errors.py`
     - In `caller.py` `poll_output` method: remove `"oidc_token": self._oidc_token or ""` from `plaintext_payload` (only send `nonce`)
@@ -207,7 +207,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Update any tests that referenced `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_RUNTIME_URL`
     - _Requirements: 10.1, 10.2_
 
-- [ ] 11. Checkpoint - Ensure all tests pass after caller module updates
+- [x] 11. Checkpoint - Ensure all tests pass after caller module updates
   - Ensure all tests pass (script_env forwarding + poll_output OIDC removal), ask the user if questions arise.
 
 ## Notes
@@ -223,5 +223,4 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - The build script uses Oras CLI v1.3.2 to push to GHCR — this only requires `GITHUB_TOKEN` (no `ACTIONS_RUNTIME_TOKEN` or `ACTIONS_RUNTIME_URL`). The build script downloads and installs Oras entirely within `/tmp/` (the only writable directory in the enclave), using `--registry-config /tmp/oras-auth.json` for credential storage. The `org.opencontainers.image.source` annotation is included to link the package to the repository for `GITHUB_TOKEN` delete permissions.
 - The temporary GHCR package is cleaned up via `actions/delete-package-versions@v5` after the workflow completes
 - Tasks from the previous implementation that are unchanged (project structure, caller module copy, Rust project, allowlist validation, provenance manifest) are marked as `[x]` (already done)
-- Tasks that need modification (build script, marker parsing, workflow, tests) are marked as `[ ]` (to be done)
 - The `/output` endpoint on the Remote Executor no longer requires or validates an OIDC token (upstream commit b846e4b). Authentication is provided solely by possession of the execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange on `/execute`. The caller's `poll_output` method should send only `nonce` in the encrypted payload. The server returns 400 for decryption failures and 404 for unknown execution IDs — it does not return 401/403 on this endpoint, making the caller's 401/403 handling dead code.
