@@ -90,7 +90,7 @@ sequenceDiagram
     BS->>GHCR: oras push binary as temp OCI package (using GITHUB_TOKEN)
     BS-->>RE: stdout with BINARY_SHA256 + BINARY_OCI_REF
     RE-->>CALLER: Encrypted execution response
-    CALLER->>RE: POST /execution/{id}/output (poll)
+    CALLER->>RE: POST /execution/{id}/output (poll, encrypted: nonce only)
     RE-->>CALLER: Encrypted output with attestation
     CALLER-->>WF: Exit code 0, stdout, attestation docs
     WF->>WF: Parse BINARY_SHA256 and BINARY_OCI_REF from stdout
@@ -164,6 +164,8 @@ Copied from `github-runner-ec2-attestation-caller`. This is the Python package t
 - `__init__.py`, `__main__.py`, `cli.py`, `caller.py`, `encryption.py`, `attestation.py`, `artifact.py`, `errors.py`
 
 **Interface:** Invoked as `python .github/scripts/call_remote_executor --server-url ... --script-path ... --github-token ... --root-cert-pem ... --expected-pcrs ... --attestation-output-dir attestation-documents --script-env GITHUB_REPOSITORY=... --script-env COMMIT_SHA=...`
+
+**Note on `/output` endpoint authentication:** The Remote Executor's `/output` endpoint authenticates callers solely by possession of the execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange on `/execute`. Successful decryption of the encrypted payload proves the caller's identity — no separate OIDC token validation is required. The caller's `poll_output` method sends only `nonce` (and optionally `offset`) in the encrypted payload; no `oidc_token` field is needed. The server returns 400 for decryption failures and 404 for unknown execution IDs — it does not return 401/403 on this endpoint.
 
 **Outputs:**
 - Exit code (0 = success)
