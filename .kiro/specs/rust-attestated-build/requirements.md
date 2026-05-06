@@ -165,3 +165,4 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 2. THE cleanup step SHALL run with `if: always()` and `continue-on-error: true` to ensure the temporary package is removed regardless of whether the workflow succeeds or fails.
 3. IF the cleanup step fails (e.g., package already deleted or permissions issue), THEN THE Workflow SHALL NOT fail the overall job.
 4. THE cleanup step SHALL delete only the specific temporary tag to avoid affecting other temporary builds that may be running concurrently.
+5. THE version ID lookup step SHALL support both user-owned and organization-owned repositories by trying the user packages API endpoint first and falling back to the organization packages API endpoint.

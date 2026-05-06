@@ -258,13 +258,24 @@ The workflow includes a cleanup step that runs with `if: always()` to delete the
     # e.g., ghcr.io/owner/repo/tmp-build:abc1234-x7k9m2
     PACKAGE_NAME="<repo>/tmp-build"  # extracted from BINARY_OCI_REF
     TAG="<tag>"                       # extracted from BINARY_OCI_REF
+    ENCODED_PACKAGE_NAME="${PACKAGE_NAME//\//%2F}"
 
-    # List versions and find the one matching our tag
-    VERSION_ID=$(gh api \
-      "/orgs/${{ github.repository_owner }}/packages/container/${PACKAGE_NAME//\//%2F}/versions" \
-      --jq ".[] | select(.metadata.container.tags[] == \"${TAG}\") | .id")
+    # Try user endpoint first (most common for personal repos), fall back to org endpoint
+    VERSION_ID=""
+    for ENDPOINT in "/users/${{ github.repository_owner }}/packages/container/${ENCODED_PACKAGE_NAME}/versions" \
+                    "/orgs/${{ github.repository_owner }}/packages/container/${ENCODED_PACKAGE_NAME}/versions"; do
+      RESPONSE=$(gh api "$ENDPOINT" 2>/dev/null) || continue
+      if echo "$RESPONSE" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        VERSION_ID=$(echo "$RESPONSE" | jq -r "[.[] | select(.metadata.container.tags[] == \"${TAG}\") | .id] | first // empty")
+        if [ -n "$VERSION_ID" ] && [ "$VERSION_ID" != "null" ]; then
+          break
+        fi
+      fi
+      VERSION_ID=""
+    done
 
-    if [ -n "$VERSION_ID" ]; then
+    # Ensure VERSION_ID is a valid integer
+    if [ -n "$VERSION_ID" ] && [[ "$VERSION_ID" =~ ^[0-9]+$ ]]; then
       echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
     fi
 
@@ -278,9 +289,11 @@ The workflow includes a cleanup step that runs with `if: always()` to delete the
     package-version-ids: ${{ steps.get_tmp_pkg_version.outputs.version_id }}
 ```
 
+**Note on user vs. org package endpoints:** The GitHub Packages REST API uses different endpoints for packages owned by users (`/users/{owner}/packages/...`) vs. organizations (`/orgs/{owner}/packages/...`). Since the repository owner may be either a user or an organization, the cleanup step tries the user endpoint first (most common for personal repos) and falls back to the org endpoint. The version ID is validated as a numeric integer before being passed to the delete action.
+
 **Note on GITHUB_TOKEN permissions for deletion:** Per GitHub docs, the ability for GitHub Actions workflows to delete packages using the REST API is in public preview. Since the temporary package is pushed from inside the enclave (not from the workflow runner), the package may not be automatically linked to the repository. To ensure the `GITHUB_TOKEN` has delete permission, the build script includes the `org.opencontainers.image.source` annotation pointing to the repository URL when pushing via Oras. This links the package to the repository and grants the `GITHUB_TOKEN` admin access.
 
-**Note on package name encoding:** GHCR container package names use forward slashes in the `actions/delete-package-versions` action's `package-name` input (e.g., `repo/tmp-build`). When using the `gh api` command to look up version IDs, slashes must be URL-encoded as `%2F`.
+**Note on package name encoding:** GHCR container package names use forward slashes in the `actions/delete-package-versions` action's `package-name` input (e.g., `repo/tmp-build`). When using the `gh api` command to look up version IDs, slashes must be URL-encoded as `%2F`. The lookup tries both the user and org API endpoints to support repositories owned by either account type.
 
 ## Data Models
 

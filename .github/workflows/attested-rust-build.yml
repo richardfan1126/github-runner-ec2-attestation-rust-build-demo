@@ -419,15 +419,28 @@ jobs:
           # URL-encode slashes in the package name for the API call
           ENCODED_PACKAGE_NAME="${PACKAGE_NAME//\//%2F}"
 
-          VERSION_ID=$(gh api \
-            "/orgs/${{ github.repository_owner }}/packages/container/${ENCODED_PACKAGE_NAME}/versions" \
-            --jq ".[] | select(.metadata.container.tags[] == \"${TAG}\") | .id")
+          # Try user endpoint first (most common for personal repos), fall back to org endpoint
+          VERSION_ID=""
+          for ENDPOINT in "/users/${{ github.repository_owner }}/packages/container/${ENCODED_PACKAGE_NAME}/versions" \
+                          "/orgs/${{ github.repository_owner }}/packages/container/${ENCODED_PACKAGE_NAME}/versions"; do
+            echo "Trying endpoint: ${ENDPOINT}"
+            RESPONSE=$(gh api "$ENDPOINT" 2>/dev/null) || continue
+            # Check if response is a JSON array (not an error object)
+            if echo "$RESPONSE" | jq -e 'type == "array"' >/dev/null 2>&1; then
+              VERSION_ID=$(echo "$RESPONSE" | jq -r "[.[] | select(.metadata.container.tags[] == \"${TAG}\") | .id] | first // empty")
+              if [ -n "$VERSION_ID" ] && [ "$VERSION_ID" != "null" ]; then
+                break
+              fi
+            fi
+            VERSION_ID=""
+          done
 
-          if [ -n "$VERSION_ID" ]; then
+          # Ensure VERSION_ID is a valid integer
+          if [ -n "$VERSION_ID" ] && [[ "$VERSION_ID" =~ ^[0-9]+$ ]]; then
             echo "version_id=${VERSION_ID}" >> "$GITHUB_OUTPUT"
             echo "Found version ID: ${VERSION_ID}"
           else
-            echo "No matching version found for tag '${TAG}'."
+            echo "No valid version ID found for tag '${TAG}'."
           fi
 
       # ------------------------------------------------------------------
