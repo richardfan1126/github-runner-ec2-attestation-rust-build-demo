@@ -90,6 +90,7 @@ sequenceDiagram
     BS->>GHCR: oras push binary as temp OCI package (using GITHUB_TOKEN)
     BS-->>RE: stdout with BINARY_SHA256 + BINARY_OCI_REF
     RE-->>CALLER: Encrypted execution response
+    CALLER->>CALLER: Validate attestation, verify request binding (repo, commit, script_path, script_env_hash)
     CALLER->>RE: POST /execution/{id}/output (poll, encrypted: nonce only)
     RE-->>CALLER: Encrypted output with attestation
     CALLER-->>WF: Exit code 0, stdout, attestation docs
@@ -169,6 +170,8 @@ Copied from `github-runner-ec2-attestation-caller`. This is the Python package t
 **Interface:** Invoked as `python .github/scripts/call_remote_executor --server-url ... --script-path ... --github-token ... --root-cert-pem ... --expected-pcrs ... --attestation-output-dir attestation-documents --script-env GITHUB_REPOSITORY=... --script-env COMMIT_SHA=...`
 
 **Note on `/output` endpoint authentication:** The Remote Executor's `/output` endpoint authenticates callers solely by possession of the execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange on `/execute`. Successful decryption of the encrypted payload proves the caller's identity — no separate OIDC token validation is required. The caller's `poll_output` method sends only `nonce` (and optionally `offset`) in the encrypted payload; no `oidc_token` field is needed. The server returns 400 for decryption failures and 404 for unknown execution IDs — it does not return 401/403 on this endpoint.
+
+**Note on execution-acceptance attestation verification:** After receiving the /execute response, the caller validates the execution-acceptance attestation and performs request binding — verifying that the attested `user_data` fields (`repository_url`, `commit_hash`, `script_path`, `script_env_hash`) match what was sent. The `script_env_hash` is a SHA-256 hex digest of the canonicalized `script_env` dictionary (keys sorted lexicographically, JSON with compact separators `(',', ':')`, no whitespace). The caller computes the expected hash locally and compares it against the attested value. When `script_env` is empty, the hash is computed over `{}`. This detects environment variable injection or modification by the server.
 
 **Outputs:**
 - Exit code (0 = success)
@@ -376,7 +379,7 @@ github-runner-ec2-attestation-rust-build-demo/
 
 *A property is a characteristic or behavior that should hold true across all valid executions of a system — essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
-Three areas of this feature contain pure logic suitable for property-based testing: stdout marker parsing, server URL allowlist validation, and provenance manifest generation. The remainder of the feature is workflow orchestration (YAML), shell scripting, and external service integration — tested via smoke tests, example-based tests, and integration tests.
+Three areas of this feature contain pure logic suitable for property-based testing: stdout marker parsing, server URL allowlist validation, and provenance manifest generation. A fourth area — `script_env_hash` computation — is also pure logic suitable for property-based testing. The remainder of the feature is workflow orchestration (YAML), shell scripting, and external service integration — tested via smoke tests, example-based tests, and integration tests.
 
 ### Property 1: Stdout marker round-trip
 
@@ -395,6 +398,12 @@ Three areas of this feature contain pure logic suitable for property-based testi
 *For any* valid binary name, SHA-256 hex digest, repository URL, commit hash, workflow run ID, and ISO 8601 timestamp, the generated provenance manifest JSON SHALL contain all of these values in the correct fields, and parsing the JSON back SHALL yield the original input values.
 
 **Validates: Requirements 5.2**
+
+### Property 4: script_env_hash round-trip
+
+*For any* dictionary of string key-value pairs (including the empty dictionary), computing the `script_env_hash` using the canonicalization algorithm (sort keys lexicographically, serialize as JSON with compact separators `(',', ':')`, SHA-256 hex digest) SHALL produce the same result as the Remote Executor's `_compute_script_env_hash` method. Specifically: the hash of `{}` SHALL always equal `sha256("{}")`, and for any non-empty dict the hash SHALL equal `sha256(json.dumps(dict, sort_keys=True, separators=(',', ':')))`.
+
+**Validates: Requirements 10.6, 10.7**
 
 ## Error Handling
 
@@ -453,6 +462,7 @@ Each property test references its design document property and runs a minimum of
 | `test_marker_roundtrip` | Property 1 | Generate random marker values, embed in random stdout, parse back |
 | `test_allowlist_validation` | Property 2 | Generate random URLs and allowlists, verify accept/reject logic |
 | `test_provenance_manifest_completeness` | Property 3 | Generate random build metadata, create manifest, verify all fields |
+| `test_script_env_hash_roundtrip` | Property 4 | Generate random string dicts, compute hash, verify deterministic and matches canonical algorithm |
 
 Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}**
 
@@ -468,6 +478,9 @@ Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}
 | `test_provenance_manifest_schema` | 5.2 | Verify manifest JSON matches expected schema |
 | `test_allowlist_empty_accepts_all` | 3.4 | Verify empty allowlist accepts any URL |
 | `test_allowlist_rejects_unlisted` | 3.4 | Verify URL not in allowlist is rejected |
+| `test_script_env_hash_empty_dict` | 10.6 | Verify empty dict produces sha256("{}") |
+| `test_script_env_hash_known_value` | 10.6 | Verify known dict produces expected hash |
+| `test_script_env_hash_mismatch_raises` | 10.8 | Verify CallerError raised on hash mismatch |
 
 ### Smoke Tests
 
