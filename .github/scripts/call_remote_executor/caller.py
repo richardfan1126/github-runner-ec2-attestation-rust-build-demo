@@ -77,6 +77,24 @@ class RemoteExecutorCaller:
         """
         return os.urandom(32).hex()
 
+    @staticmethod
+    def _compute_script_env_hash(script_env: dict[str, str] | None) -> str:
+        """Compute SHA-256 hex digest of the canonicalized script_env dictionary.
+
+        Canonicalization: keys sorted lexicographically, JSON with compact
+        separators (',', ':'), no whitespace. When script_env is None or empty,
+        computes the hash of the string "{}".
+
+        This must match the Remote Executor's server-side computation so that
+        the caller can verify the attested script_env_hash in the execution-
+        acceptance attestation document.
+        """
+        if not script_env:
+            canonical = json.dumps({}, sort_keys=True, separators=(",", ":"))
+        else:
+            canonical = json.dumps(script_env, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
     # ---- Thin delegation wrappers for attestation functions ----
 
     def _decode_cose_sign1(self, raw_bytes: bytes, phase: str) -> list:
@@ -509,6 +527,25 @@ class RemoteExecutorCaller:
                             "field": field,
                             "attested": attested_value,
                             "sent": sent_value,
+                        },
+                    )
+
+            # Verify script_env_hash if present in attestation (Req 10.7, 10.8, 10.9)
+            attested_script_env_hash = attested.get("script_env_hash")
+            if attested_script_env_hash is not None:
+                expected_script_env_hash = self._compute_script_env_hash(script_env)
+                if attested_script_env_hash != expected_script_env_hash:
+                    raise CallerError(
+                        message=(
+                            f"Execution-acceptance attestation binding failed: "
+                            f"attested 'script_env_hash' ({attested_script_env_hash!r}) "
+                            f"does not match expected value ({expected_script_env_hash!r})"
+                        ),
+                        phase="execute",
+                        details={
+                            "field": "script_env_hash",
+                            "attested": attested_script_env_hash,
+                            "expected": expected_script_env_hash,
                         },
                     )
 

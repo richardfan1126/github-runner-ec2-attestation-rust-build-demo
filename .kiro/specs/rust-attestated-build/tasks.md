@@ -209,15 +209,15 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - [x] 11. Checkpoint - Ensure all tests pass after caller module updates
   - Ensure all tests pass (script_env forwarding + poll_output OIDC removal), ask the user if questions arise.
 
-- [ ] 12. Implement script_env_hash verification in Caller module
-  - [ ] 12.1 Add `_compute_script_env_hash` helper to `caller.py` in both projects
+- [x] 12. Implement script_env_hash verification in Caller module
+  - [x] 12.1 Add `_compute_script_env_hash` helper to `caller.py` in both projects
     - Implement in `.github/scripts/call_remote_executor/caller.py`
     - Canonicalization: `json.dumps(script_env, sort_keys=True, separators=(',', ':'))` then `hashlib.sha256(...).hexdigest()`
     - When `script_env` is empty or None, compute hash of `{}`
     - Apply the same change to `github-runner-ec2-attestation-caller/.github/scripts/call_remote_executor/caller.py`
     - _Requirements: 10.6_
 
-  - [ ] 12.2 Add `script_env_hash` verification to `execute()` method request binding
+  - [x] 12.2 Add `script_env_hash` verification to `execute()` method request binding
     - In the existing request-binding loop in `execute()` (after `for field in ("repository_url", "commit_hash", "script_path")`), add verification of `script_env_hash`
     - Compute expected hash from `script_env` passed to `execute()`
     - Compare against `attested.get("script_env_hash")`
@@ -225,20 +225,20 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Apply the same change to `github-runner-ec2-attestation-caller/.github/scripts/call_remote_executor/caller.py`
     - _Requirements: 10.7, 10.8, 10.9_
 
-  - [ ] 12.3 Write property test for script_env_hash round-trip (Property 4)
+  - [x] 12.3 Write property test for script_env_hash round-trip (Property 4)
     - **Property 4: script_env_hash round-trip**
     - For any dictionary of string key-value pairs, the hash is deterministic and matches the canonical algorithm
     - Use Hypothesis to generate random string dicts
     - Minimum 100 examples via `@settings(max_examples=100)`
     - **Validates: Requirements 10.6, 10.7**
 
-  - [ ] 12.4 Write unit tests for script_env_hash verification
+  - [x] 12.4 Write unit tests for script_env_hash verification
     - Test `test_script_env_hash_empty_dict` — empty dict produces sha256("{}")
     - Test `test_script_env_hash_known_value` — known dict produces expected hash
     - Test `test_script_env_hash_mismatch_raises` — CallerError raised on hash mismatch
     - _Requirements: 10.6, 10.7, 10.8_
 
-- [ ] 13. Checkpoint - Ensure all tests pass after script_env_hash verification
+- [x] 13. Checkpoint - Ensure all tests pass after script_env_hash verification
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
