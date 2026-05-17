@@ -194,7 +194,8 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Verify it can be specified multiple times, each providing a `KEY=VALUE` pair
     - _Requirements: 10.1_
 
-  - [x] ~~10.2 Verify `script_env` is included in the encrypted /execute payload~~ _(obsolete — superseded by 12.1 which adds script_env_hash verification on top of payload inclusion)_
+  - [x] 10.2 _(obsolete — superseded by 12.1 which adds script_env_hash verification on top of payload inclusion)_
+    - _Requirements: 10.2_
 
   - [x] 10.3 Update workflow to pass simplified env vars via `--script-env`
     - In the "Run Remote Executor Caller" step of `attested-rust-build.yml`, pass `--script-env` arguments for `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and `COMMIT_SHA`
@@ -241,6 +242,39 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - [x] 13. Checkpoint - Ensure all tests pass after script_env_hash verification
   - Ensure all tests pass, ask the user if questions arise.
 
+- [ ] 14. Adopt upstream security hardening: execution_id binding, encrypted error envelopes, mandatory nonces
+
+  - [ ] 14.1 Add `execution_id` verification to `execute()` request binding
+    - In `.github/scripts/call_remote_executor/caller.py` `execute()` method, after the `script_env_hash` verification block, add verification of `execution_id`
+    - Compare `attested.get("execution_id")` against `decrypted.get("execution_id")`
+    - Raise CallerError on mismatch with descriptive message including both values
+    - _Requirements: 10.10, 10.11_
+
+  - [ ] 14.2 Add encrypted error envelope detection to `execute()`
+    - In `.github/scripts/call_remote_executor/caller.py` `execute()` method, after decrypting the HTTP 200 response, check if the decrypted payload contains an `error` field
+    - If `error` field is present, raise CallerError with the `error` message and `error_code` from the envelope (do NOT proceed to attestation validation)
+    - This check must occur BEFORE the attestation_document extraction
+    - _Requirements: 10.12, 10.13_
+
+  - [ ] 14.3 Add encrypted error envelope detection to `poll_output()`
+    - In `.github/scripts/call_remote_executor/caller.py` `poll_output()` method, after decrypting the HTTP 200 response, check if the decrypted payload contains an `error` field
+    - If `error` field is present, raise CallerError with the `error` message and `error_code` from the envelope
+    - This check must occur BEFORE processing stdout/stderr/exit_code
+    - _Requirements: 10.14_
+
+  - [x] 14.4 _(skipped — not needed)_ Pre-decryption errors still use plaintext HTTP; only post-decryption errors use encrypted envelopes. The existing handlers cover pre-decryption 400/413 and the edge case where the server hasn't been upgraded yet.
+    - _Requirements: 10.13_
+
+  - [ ] 14.5 Write unit tests for execution_id binding and encrypted error envelopes
+    - Test `test_execution_id_binding_verified` — verify attested execution_id matches response body execution_id (happy path)
+    - Test `test_execution_id_mismatch_raises` — verify CallerError raised when attested execution_id differs from response body
+    - Test `test_encrypted_error_envelope_detected` — verify CallerError raised when decrypted /execute response contains `error` field
+    - Test `test_encrypted_error_envelope_on_poll` — verify CallerError raised when decrypted /output response contains `error` field
+    - _Requirements: 10.10, 10.11, 10.12, 10.14_
+
+- [ ] 15. Checkpoint - Ensure all tests pass after security hardening adoption
+  - Ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Each task references specific requirements for traceability
@@ -256,3 +290,18 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - The temporary GHCR package is cleaned up via `actions/delete-package-versions@v5` after the workflow completes
 - Tasks from the previous implementation that are unchanged (project structure, caller module copy, Rust project, allowlist validation, provenance manifest) are marked as `[x]` (already done)
 - The `/output` endpoint on the Remote Executor no longer requires or validates an OIDC token (upstream commit b846e4b). Authentication is provided solely by possession of the execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange on `/execute`. The caller's `poll_output` method should send only `nonce` in the encrypted payload. The server returns 400 for decryption failures and 404 for unknown execution IDs — it does not return 401/403 on this endpoint, making the caller's 401/403 handling dead code.
+- Upstream security hardening (commit c667730) introduces three changes affecting the caller: (1) `execution_id` is now included in attestation user_data — the caller must verify it matches the response body; (2) post-decryption application errors are returned as encrypted error envelopes (HTTP 200 with `{"error": ..., "error_code": ...}` in the decrypted payload) — the caller must detect and handle these; (3) nonces are now mandatory on /execute and /output — the caller already sends them, so no code change needed for this.
+- The existing plaintext HTTP error handlers (400, 401, 403, 413, 503) in `execute()` remain valid for pre-decryption errors (malformed JSON, decryption failure, body size exceeded). Post-decryption errors (OIDC failures, repo mismatch, nonce duplicate, etc.) are now returned as encrypted envelopes with HTTP 200.
+
+## Task Dependency Graph
+
+```json
+{
+  "waves": [
+    { "id": 1, "tasks": ["14.1", "14.2", "14.3"] },
+    { "id": 2, "tasks": ["14.4"] },
+    { "id": 3, "tasks": ["14.5"] },
+    { "id": 4, "tasks": ["15"] }
+  ]
+}
+```

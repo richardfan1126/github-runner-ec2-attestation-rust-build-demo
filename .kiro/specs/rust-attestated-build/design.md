@@ -90,7 +90,7 @@ sequenceDiagram
     BS->>GHCR: oras push binary as temp OCI package (using GITHUB_TOKEN)
     BS-->>RE: stdout with BINARY_SHA256 + BINARY_OCI_REF
     RE-->>CALLER: Encrypted execution response
-    CALLER->>CALLER: Validate attestation, verify request binding (repo, commit, script_path, script_env_hash)
+    CALLER->>CALLER: Validate attestation, verify request binding (repo, commit, script_path, script_env_hash, execution_id)
     CALLER->>RE: POST /execution/{id}/output (poll, encrypted: nonce only)
     RE-->>CALLER: Encrypted output with attestation
     CALLER-->>WF: Exit code 0, stdout, attestation docs
@@ -169,9 +169,15 @@ Copied from `github-runner-ec2-attestation-caller`. This is the Python package t
 
 **Interface:** Invoked as `python .github/scripts/call_remote_executor --server-url ... --script-path ... --github-token ... --root-cert-pem ... --expected-pcrs ... --attestation-output-dir attestation-documents --script-env GITHUB_REPOSITORY=... --script-env COMMIT_SHA=...`
 
-**Note on `/output` endpoint authentication:** The Remote Executor's `/output` endpoint authenticates callers solely by possession of the execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange on `/execute`. Successful decryption of the encrypted payload proves the caller's identity — no separate OIDC token validation is required. The caller's `poll_output` method sends only `nonce` (and optionally `offset`) in the encrypted payload; no `oidc_token` field is needed. The server returns 400 for decryption failures and 404 for unknown execution IDs — it does not return 401/403 on this endpoint.
+**Note on mandatory nonces:** The Remote Executor requires a non-empty `nonce` field in every encrypted /execute and /execution/{id}/output request. The caller generates a unique 64-character hex nonce (32 random bytes) for each request. Missing or empty nonces are rejected with HTTP 400.
+
+**Note on `/output` endpoint authentication:** The Remote Executor's `/output` endpoint authenticates callers solely by possession of the execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange on `/execute`. Successful decryption of the encrypted payload proves the caller's identity — no separate OIDC token validation is required. The caller's `poll_output` method sends only `nonce` (and optionally `offset`) in the encrypted payload; no `oidc_token` field is needed. The `nonce` field is mandatory — the server rejects requests with missing or empty nonces with HTTP 400. The server returns 400 for decryption failures and 404 for unknown execution IDs — it does not return 401/403 on this endpoint.
 
 **Note on execution-acceptance attestation verification:** After receiving the /execute response, the caller validates the execution-acceptance attestation and performs request binding — verifying that the attested `user_data` fields (`repository_url`, `commit_hash`, `script_path`, `script_env_hash`) match what was sent. The `script_env_hash` is a SHA-256 hex digest of the canonicalized `script_env` dictionary (keys sorted lexicographically, JSON with compact separators `(',', ':')`, no whitespace). The caller computes the expected hash locally and compares it against the attested value. When `script_env` is empty, the hash is computed over `{}`. This detects environment variable injection or modification by the server.
+
+**Note on `execution_id` binding in attestation:** The execution-acceptance attestation's `user_data` also contains an `execution_id` field. The caller verifies that this attested `execution_id` matches the `execution_id` returned in the decrypted /execute response body, ensuring the attestation is bound to the specific execution record.
+
+**Note on encrypted error envelopes:** Once the server successfully decrypts the /execute request (establishing the Shared_Key), all subsequent application-level errors (OIDC validation failures, repository mismatch, nonce duplicate, script size exceeded, capacity exceeded) are returned as encrypted error envelopes with HTTP 200 at the transport layer. The decrypted payload contains `{"error": "description", "error_code": 403}` instead of the normal execution response. The caller detects these by checking for an `error` field in the decrypted response and raises a CallerError with the enclosed details. Pre-decryption errors (malformed JSON, invalid client_public_key, decryption failure, body size exceeded) remain as plaintext HTTP errors (400, 413). The same pattern applies to /execution/{id}/output — post-decryption errors (nonce duplicate, execution not found) are returned as encrypted envelopes.
 
 **Outputs:**
 - Exit code (0 = success)
@@ -426,6 +432,7 @@ Three areas of this feature contain pure logic suitable for property-based testi
 | `server_url` is empty | Fail job with `::error::` annotation |
 | `server_url` not in allowlist | Fail job with `::error::` annotation |
 | Caller exits non-zero | Fail job, upload attestation docs (if any) |
+| Encrypted error envelope from server (post-decryption) | Caller raises CallerError with error message and error_code from envelope |
 | `BINARY_SHA256` marker missing from stdout | Fail job with descriptive error |
 | `BINARY_OCI_REF` marker missing from stdout | Fail job with descriptive error |
 | `oras pull` of temporary binary fails | Fail job with descriptive error |
@@ -481,6 +488,10 @@ Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}
 | `test_script_env_hash_empty_dict` | 10.6 | Verify empty dict produces sha256("{}") |
 | `test_script_env_hash_known_value` | 10.6 | Verify known dict produces expected hash |
 | `test_script_env_hash_mismatch_raises` | 10.8 | Verify CallerError raised on hash mismatch |
+| `test_execution_id_binding_verified` | 10.10 | Verify attested execution_id matches response body execution_id |
+| `test_execution_id_mismatch_raises` | 10.11 | Verify CallerError raised on execution_id mismatch |
+| `test_encrypted_error_envelope_detected` | 10.12 | Verify CallerError raised when decrypted response contains `error` field |
+| `test_encrypted_error_envelope_on_poll` | 10.14 | Verify CallerError raised when poll decrypted response contains `error` field |
 
 ### Smoke Tests
 
