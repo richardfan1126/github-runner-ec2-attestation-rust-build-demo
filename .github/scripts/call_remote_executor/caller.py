@@ -549,6 +549,25 @@ class RemoteExecutorCaller:
                         },
                     )
 
+            # Verify execution_id if present in attestation (Req 10.10, 10.11)
+            attested_execution_id = attested.get("execution_id")
+            if attested_execution_id is not None:
+                response_execution_id = decrypted.get("execution_id")
+                if attested_execution_id != response_execution_id:
+                    raise CallerError(
+                        message=(
+                            f"Execution-acceptance attestation binding failed: "
+                            f"attested 'execution_id' ({attested_execution_id!r}) "
+                            f"does not match response body 'execution_id' ({response_execution_id!r})"
+                        ),
+                        phase="execute",
+                        details={
+                            "field": "execution_id",
+                            "attested": attested_execution_id,
+                            "response": response_execution_id,
+                        },
+                    )
+
         # Save execution acceptance attestation artifact
         if self._artifact_collector is not None:
             self._artifact_collector.save_execution_acceptance(

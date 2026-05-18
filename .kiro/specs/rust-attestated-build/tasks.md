@@ -244,7 +244,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 
 - [ ] 14. Adopt upstream security hardening: execution_id binding, encrypted error envelopes, mandatory nonces
 
-  - [ ] 14.1 Add `execution_id` verification to `execute()` request binding
+  - [x] 14.1 Add `execution_id` verification to `execute()` request binding
     - In `.github/scripts/call_remote_executor/caller.py` `execute()` method, after the `script_env_hash` verification block, add verification of `execution_id`
     - Compare `attested.get("execution_id")` against `decrypted.get("execution_id")`
     - Raise CallerError on mismatch with descriptive message including both values
