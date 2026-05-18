@@ -179,6 +179,8 @@ Copied from `github-runner-ec2-attestation-caller`. This is the Python package t
 
 **Note on encrypted error envelopes:** Once the server successfully decrypts the /execute request (establishing the Shared_Key), all subsequent application-level errors (OIDC validation failures, repository mismatch, nonce duplicate, script size exceeded, capacity exceeded) are returned as encrypted error envelopes with HTTP 200 at the transport layer. The decrypted payload contains `{"error": "description", "error_code": 403}` instead of the normal execution response. The caller detects these by checking for an `error` field in the decrypted response and raises a CallerError with the enclosed details. Pre-decryption errors (malformed JSON, invalid client_public_key, decryption failure, body size exceeded) remain as plaintext HTTP errors (400, 413). The same pattern applies to /execution/{id}/output — post-decryption errors (nonce duplicate, execution not found) are returned as encrypted envelopes.
 
+**Note on output-integrity attestation `user_data` format:** The output-integrity attestation's `user_data` field contains a JSON object `{"output_digest": "<sha256_hex>", "execution_id": "<uuid>"}` rather than a raw hex digest string. The `output_digest` is the SHA-256 hex digest of the canonical output (`stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}`). The caller's `verify_output_attestation` function parses this JSON and extracts the `output_digest` field for comparison against the locally computed digest. For backward compatibility, if `user_data` is not valid JSON or does not contain an `output_digest` key, the caller falls back to treating the entire `user_data` string as the raw hex digest.
+
 **Outputs:**
 - Exit code (0 = success)
 - stdout/stderr from the remote execution (including the `BINARY_SHA256` and `BINARY_OCI_REF` markers)
@@ -433,6 +435,8 @@ Three areas of this feature contain pure logic suitable for property-based testi
 | `server_url` not in allowlist | Fail job with `::error::` annotation |
 | Caller exits non-zero | Fail job, upload attestation docs (if any) |
 | Encrypted error envelope from server (post-decryption) | Caller raises CallerError with error message and error_code from envelope |
+| Output integrity attestation `user_data` not valid JSON | Caller falls back to treating entire `user_data` as raw hex digest |
+| Output integrity digest mismatch | Caller raises CallerError with computed vs attested digest values |
 | `BINARY_SHA256` marker missing from stdout | Fail job with descriptive error |
 | `BINARY_OCI_REF` marker missing from stdout | Fail job with descriptive error |
 | `oras pull` of temporary binary fails | Fail job with descriptive error |

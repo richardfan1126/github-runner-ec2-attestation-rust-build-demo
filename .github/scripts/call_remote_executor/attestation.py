@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import json
 import logging
 
 import cbor2
@@ -324,9 +325,11 @@ def validate_output_attestation(
     expected_pcrs: dict[int, str] | None,
     expected_nonce: str | None = None,
 ) -> bool:
-    """Decode output attestation CBOR, extract user_data digest.
+    """Decode output attestation CBOR, extract output_digest from user_data JSON.
 
-    Compute SHA-256 of canonical output format. Compare digests.
+    The user_data field contains a JSON object {"output_digest": "<hex>", "execution_id": "<uuid>"}.
+    Extracts the output_digest, computes SHA-256 of canonical output format, and compares digests.
+    Falls back to treating user_data as raw hex digest for backward compatibility.
     Returns True if match.
     Raises CallerError on decode/parse failures or digest mismatch.
     """
@@ -441,7 +444,7 @@ def validate_output_attestation(
             decoded = val.decode() if isinstance(val, bytes) else val
             logger.info("Attestation field %s: %s", field, decoded)
 
-    # Extract user_data from verified payload (SHA-256 hex digest)
+    # Extract user_data from verified payload (JSON containing output_digest)
     user_data_raw = payload_doc.get("user_data")
     if user_data_raw is None:
         raise CallerError(
@@ -450,9 +453,17 @@ def validate_output_attestation(
         )
 
     if isinstance(user_data_raw, bytes):
-        attestation_digest = user_data_raw.decode("utf-8")
+        user_data_str = user_data_raw.decode("utf-8")
     else:
-        attestation_digest = str(user_data_raw)
+        user_data_str = str(user_data_raw)
+
+    # user_data is a JSON object: {"output_digest": "<hex>", "execution_id": "..."}
+    try:
+        user_data_json = json.loads(user_data_str)
+        attestation_digest = user_data_json["output_digest"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        # Fallback: treat as raw hex digest for backward compatibility
+        attestation_digest = user_data_str
 
     # Reconstruct canonical output and compute SHA-256 hex digest
     canonical_output = f"stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}"
