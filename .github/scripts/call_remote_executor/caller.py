@@ -684,6 +684,22 @@ class RemoteExecutorCaller:
             encrypted_response_b64 = resp_data.get("encrypted_response", "")
             data = self._encryption.decrypt_response(encrypted_response_b64)
 
+            # Detect encrypted error envelope (Req 10.14)
+            # Post-decryption application errors are returned as HTTP 200 with
+            # {"error": ..., "error_code": ...} in the decrypted payload.
+            if "error" in data:
+                error_message = data.get("error", "Unknown server error")
+                error_code = data.get("error_code", "UNKNOWN")
+                raise CallerError(
+                    message=f"Server returned encrypted error: {error_message}",
+                    phase="polling",
+                    details={
+                        "error": error_message,
+                        "error_code": error_code,
+                        "execution_id": execution_id,
+                    },
+                )
+
             # Check for output truncation
             truncated = data.get("truncated", False)
             if truncated:

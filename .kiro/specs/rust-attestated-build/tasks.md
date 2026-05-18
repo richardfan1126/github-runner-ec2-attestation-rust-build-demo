@@ -256,7 +256,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - This check must occur BEFORE the attestation_document extraction
     - _Requirements: 10.12, 10.13_
 
-  - [ ] 14.3 Add encrypted error envelope detection to `poll_output()`
+  - [x] 14.3 Add encrypted error envelope detection to `poll_output()`
     - In `.github/scripts/call_remote_executor/caller.py` `poll_output()` method, after decrypting the HTTP 200 response, check if the decrypted payload contains an `error` field
     - If `error` field is present, raise CallerError with the `error` message and `error_code` from the envelope
     - This check must occur BEFORE processing stdout/stderr/exit_code
