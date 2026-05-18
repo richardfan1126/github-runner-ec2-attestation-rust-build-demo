@@ -242,7 +242,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - [x] 13. Checkpoint - Ensure all tests pass after script_env_hash verification
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 14. Adopt upstream security hardening: execution_id binding, encrypted error envelopes, mandatory nonces
+- [x] 14. Adopt upstream security hardening: execution_id binding, encrypted error envelopes, mandatory nonces
 
   - [x] 14.1 Add `execution_id` verification to `execute()` request binding
     - In `.github/scripts/call_remote_executor/caller.py` `execute()` method, after the `script_env_hash` verification block, add verification of `execution_id`
@@ -265,14 +265,14 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
   - [x] 14.4 _(skipped — not needed)_ Pre-decryption errors still use plaintext HTTP; only post-decryption errors use encrypted envelopes. The existing handlers cover pre-decryption 400/413 and the edge case where the server hasn't been upgraded yet.
     - _Requirements: 10.13_
 
-  - [ ] 14.5 Write unit tests for execution_id binding and encrypted error envelopes
+  - [x] 14.5 Write unit tests for execution_id binding and encrypted error envelopes
     - Test `test_execution_id_binding_verified` — verify attested execution_id matches response body execution_id (happy path)
     - Test `test_execution_id_mismatch_raises` — verify CallerError raised when attested execution_id differs from response body
     - Test `test_encrypted_error_envelope_detected` — verify CallerError raised when decrypted /execute response contains `error` field
     - Test `test_encrypted_error_envelope_on_poll` — verify CallerError raised when decrypted /output response contains `error` field
     - _Requirements: 10.10, 10.11, 10.12, 10.14_
 
-- [ ] 15. Checkpoint - Ensure all tests pass after security hardening adoption
+- [x] 15. Checkpoint - Ensure all tests pass after security hardening adoption
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
