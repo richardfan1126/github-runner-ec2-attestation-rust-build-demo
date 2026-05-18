@@ -483,6 +483,21 @@ class RemoteExecutorCaller:
         encrypted_response_b64 = data.get("encrypted_response", "")
         decrypted = self._encryption.decrypt_response(encrypted_response_b64)
 
+        # Detect encrypted error envelope (Req 10.12, 10.13)
+        # Post-decryption application errors are returned as HTTP 200 with
+        # {"error": ..., "error_code": ...} in the decrypted payload.
+        if "error" in decrypted:
+            error_message = decrypted.get("error", "Unknown server error")
+            error_code = decrypted.get("error_code", "UNKNOWN")
+            raise CallerError(
+                message=f"Server returned encrypted error: {error_message}",
+                phase="execute",
+                details={
+                    "error": error_message,
+                    "error_code": error_code,
+                },
+            )
+
         # Execution-acceptance attestation is mandatory (Req 3.8)
         attestation_b64 = decrypted.get("attestation_document", "")
         if not attestation_b64:

@@ -250,7 +250,7 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
     - Raise CallerError on mismatch with descriptive message including both values
     - _Requirements: 10.10, 10.11_
 
-  - [ ] 14.2 Add encrypted error envelope detection to `execute()`
+  - [x] 14.2 Add encrypted error envelope detection to `execute()`
     - In `.github/scripts/call_remote_executor/caller.py` `execute()` method, after decrypting the HTTP 200 response, check if the decrypted payload contains an `error` field
     - If `error` field is present, raise CallerError with the `error` message and `error_code` from the envelope (do NOT proceed to attestation validation)
     - This check must occur BEFORE the attestation_document extraction
