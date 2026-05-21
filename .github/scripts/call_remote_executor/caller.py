@@ -606,15 +606,20 @@ class RemoteExecutorCaller:
         and sends {encrypted_payload} (no client_public_key, no Authorization header).
         Decrypts the encrypted response from the server.
 
-        Validates output attestation inline on each poll response:
-        - When output_attestation_document is present, validates it with the
-          current stdout, stderr, exit_code and the nonce for that poll request.
-        - When output_attestation_document is null with attestation_error, logs
-          a warning and continues.
-        - When output_attestation_document is null without attestation_error,
-          logs a warning and continues.
+        Intermediate polls only track progress (stdout/stderr streaming). Output
+        attestation is validated only on the final poll response (when
+        complete=true). This avoids unnecessary TPM attestation generation on
+        the server during intermediate polls.
 
-        Tracks per-poll validation results to determine overall output_integrity_status.
+        On the final poll:
+        - If output_attestation_document is present: validates it against the
+          final stdout, stderr, exit_code and the nonce for that poll request.
+        - If output_attestation_document is null AND attestation_rate_limited is
+          true: logs an informational message and sets output_integrity_status
+          to "rate_limited" (non-error condition).
+        - If output_attestation_document is null without attestation_rate_limited:
+          applies fail-closed logic (raises CallerError unless
+          allow_missing_output_attestation is set).
 
         Logs incremental output during polling.
         Returns final decrypted response with stdout, stderr, exit_code,
@@ -633,8 +638,6 @@ class RemoteExecutorCaller:
         consecutive_errors = 0
         prev_stdout_offset = 0
         prev_stderr_offset = 0
-        all_validations_passed = True
-        any_attestation_received = False
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -733,40 +736,9 @@ class RemoteExecutorCaller:
                 chunk = stderr[prev_stderr_offset:]
                 print(chunk, end="" if chunk.endswith("\n") else "\n", file=sys.stderr, flush=True)
                 prev_stderr_offset = len(stderr)
-            # Per-poll output attestation validation
-            output_attestation_b64 = data.get("output_attestation_document")
-            if output_attestation_b64:
-                any_attestation_received = True
-                self.validate_output_attestation(
-                    output_attestation_b64, stdout, stderr, exit_code,
-                    expected_nonce=nonce,
-                )
-
-                # Save output integrity attestation artifact
-                if self._artifact_collector is not None:
-                    canonical_output = f"stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}"
-                    output_digest = hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
-                    self._artifact_collector.save_output_integrity(
-                        attestation_b64=output_attestation_b64,
-                        nonce=nonce,
-                        execution_id=execution_id,
-                        stdout=stdout,
-                        stderr=stderr,
-                        exit_code=exit_code,
-                        output_digest=output_digest,
-                    )
-            else:
-                attestation_error = data.get("attestation_error")
-                if attestation_error:
-                    logger.warning(
-                        "Output attestation not available for this poll: %s",
-                        attestation_error,
-                    )
-                else:
-                    logger.warning(
-                        "Output attestation document is null with no attestation_error"
-                    )
-                all_validations_passed = False
+            # Per-poll output attestation is intentionally skipped for intermediate
+            # polls. Attestation is validated only on the final poll (complete=true).
+            # This avoids unnecessary TPM attestation generation on the server.
 
             if data.get("complete"):
                 # Validate exit_code is a concrete integer (not None, bool, float, or string)
@@ -779,9 +751,38 @@ class RemoteExecutorCaller:
                         phase="polling",
                         details={"exit_code": exit_code, "exit_code_type": type(exit_code).__name__},
                     )
-                # Fail-closed: on the final poll, a missing output attestation is an error
-                # unless allow_missing_output_attestation is set (Req 5.13, 5.14)
-                if not output_attestation_b64:
+
+                # Final-poll output attestation validation
+                output_attestation_b64 = data.get("output_attestation_document")
+                if output_attestation_b64:
+                    # Attestation present: validate it
+                    self.validate_output_attestation(
+                        output_attestation_b64, stdout, stderr, exit_code,
+                        expected_nonce=nonce,
+                    )
+
+                    # Save output integrity attestation artifact
+                    if self._artifact_collector is not None:
+                        canonical_output = f"stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}"
+                        output_digest = hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
+                        self._artifact_collector.save_output_integrity(
+                            attestation_b64=output_attestation_b64,
+                            nonce=nonce,
+                            execution_id=execution_id,
+                            stdout=stdout,
+                            stderr=stderr,
+                            exit_code=exit_code,
+                            output_digest=output_digest,
+                        )
+                    output_integrity_status = "pass"
+                elif data.get("attestation_rate_limited"):
+                    # Server rate-limited the attestation — non-error condition
+                    logger.info(
+                        "Output attestation was rate-limited by the server"
+                    )
+                    output_integrity_status = "rate_limited"
+                else:
+                    # Attestation missing without rate limiting — fail-closed
                     if not self.allow_missing_output_attestation:
                         raise CallerError(
                             message=(
@@ -797,12 +798,8 @@ class RemoteExecutorCaller:
                             "Output attestation is missing on the final poll response "
                             "(allow_missing_output_attestation=True, continuing in degraded mode)"
                         )
-                if any_attestation_received and all_validations_passed:
-                    output_integrity_status = "pass"
-                elif not any_attestation_received:
                     output_integrity_status = "skipped"
-                else:
-                    output_integrity_status = "partial"
+
                 return {
                     "stdout": stdout,
                     "stderr": stderr,

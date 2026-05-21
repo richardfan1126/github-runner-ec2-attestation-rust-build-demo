@@ -275,29 +275,29 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - [x] 15. Checkpoint - Ensure all tests pass after security hardening adoption
   - Ensure all tests pass, ask the user if questions arise.
 
-- [ ] 16. Adopt output polling simplification and output attestation rate limiting tolerance
+- [x] 16. Adopt output polling simplification and output attestation rate limiting tolerance
 
-  - [ ] 16.1 Refactor `poll_output()` to final-only output attestation
+  - [x] 16.1 Refactor `poll_output()` to final-only output attestation
     - In `.github/scripts/call_remote_executor/caller.py` `poll_output()` method, remove the per-poll output attestation validation block (the `output_attestation_b64 = data.get(...)` / `validate_output_attestation(...)` / `save_output_integrity(...)` logic that runs on every poll iteration)
     - Remove the `all_validations_passed` and `any_attestation_received` tracking variables (no longer needed for per-poll tracking)
     - Move output attestation validation to only execute inside the `if data.get("complete"):` block — validate and store the attestation only on the final poll response
     - Update the `poll_output()` docstring to reflect the new behavior: polls only track progress; attestation is obtained only on the final poll
     - _Requirements: 13.1_
 
-  - [ ] 16.2 Add `attestation_rate_limited` handling to `poll_output()`
+  - [x] 16.2 Add `attestation_rate_limited` handling to `poll_output()`
     - In the final-poll attestation block (inside `if data.get("complete"):`), after checking `output_attestation_document`:
       - If `output_attestation_document` is present and non-null: validate it (existing behavior)
       - If `output_attestation_document` is null AND `data.get("attestation_rate_limited")` is `True`: log an informational message (e.g., "Output attestation was rate-limited by the server") and set `output_integrity_status = "rate_limited"` — do NOT raise CallerError
       - If `output_attestation_document` is null AND `attestation_rate_limited` is NOT true: apply the existing `allow_missing_output_attestation` logic (fail-closed unless the flag is set)
     - _Requirements: 13.2, 13.3_
 
-  - [ ] 16.3 Update unit tests for final-only attestation and rate limiting tolerance
+  - [x] 16.3 Update unit tests for final-only attestation and rate limiting tolerance
     - Test `test_poll_output_validates_attestation_only_on_final` — verify that intermediate poll responses with `output_attestation_document` present do NOT trigger validation or artifact saving
     - Test `test_poll_output_rate_limited_attestation_does_not_fail` — verify that when the final poll has `output_attestation_document: null` and `attestation_rate_limited: true`, the caller does NOT raise CallerError and returns `output_integrity_status = "rate_limited"`
     - Test `test_poll_output_missing_attestation_without_rate_limit_fails` — verify that when the final poll has `output_attestation_document: null` without `attestation_rate_limited: true`, the caller raises CallerError (unless `allow_missing_output_attestation` is set)
     - _Requirements: 13.1, 13.2, 13.3_
 
-- [ ] 17. Checkpoint - Ensure all tests pass after output polling refactor
+- [x] 17. Checkpoint - Ensure all tests pass after output polling refactor
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes
