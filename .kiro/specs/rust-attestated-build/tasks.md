@@ -275,6 +275,31 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - [x] 15. Checkpoint - Ensure all tests pass after security hardening adoption
   - Ensure all tests pass, ask the user if questions arise.
 
+- [ ] 16. Adopt output polling simplification and output attestation rate limiting tolerance
+
+  - [ ] 16.1 Refactor `poll_output()` to final-only output attestation
+    - In `.github/scripts/call_remote_executor/caller.py` `poll_output()` method, remove the per-poll output attestation validation block (the `output_attestation_b64 = data.get(...)` / `validate_output_attestation(...)` / `save_output_integrity(...)` logic that runs on every poll iteration)
+    - Remove the `all_validations_passed` and `any_attestation_received` tracking variables (no longer needed for per-poll tracking)
+    - Move output attestation validation to only execute inside the `if data.get("complete"):` block — validate and store the attestation only on the final poll response
+    - Update the `poll_output()` docstring to reflect the new behavior: polls only track progress; attestation is obtained only on the final poll
+    - _Requirements: 13.1_
+
+  - [ ] 16.2 Add `attestation_rate_limited` handling to `poll_output()`
+    - In the final-poll attestation block (inside `if data.get("complete"):`), after checking `output_attestation_document`:
+      - If `output_attestation_document` is present and non-null: validate it (existing behavior)
+      - If `output_attestation_document` is null AND `data.get("attestation_rate_limited")` is `True`: log an informational message (e.g., "Output attestation was rate-limited by the server") and set `output_integrity_status = "rate_limited"` — do NOT raise CallerError
+      - If `output_attestation_document` is null AND `attestation_rate_limited` is NOT true: apply the existing `allow_missing_output_attestation` logic (fail-closed unless the flag is set)
+    - _Requirements: 13.2, 13.3_
+
+  - [ ] 16.3 Update unit tests for final-only attestation and rate limiting tolerance
+    - Test `test_poll_output_validates_attestation_only_on_final` — verify that intermediate poll responses with `output_attestation_document` present do NOT trigger validation or artifact saving
+    - Test `test_poll_output_rate_limited_attestation_does_not_fail` — verify that when the final poll has `output_attestation_document: null` and `attestation_rate_limited: true`, the caller does NOT raise CallerError and returns `output_integrity_status = "rate_limited"`
+    - Test `test_poll_output_missing_attestation_without_rate_limit_fails` — verify that when the final poll has `output_attestation_document: null` without `attestation_rate_limited: true`, the caller raises CallerError (unless `allow_missing_output_attestation` is set)
+    - _Requirements: 13.1, 13.2, 13.3_
+
+- [ ] 17. Checkpoint - Ensure all tests pass after output polling refactor
+  - Ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Each task references specific requirements for traceability
@@ -292,16 +317,18 @@ The binary is transferred from the enclave to the workflow via a temporary GHCR 
 - The `/output` endpoint on the Remote Executor no longer requires or validates an OIDC token (upstream commit b846e4b). Authentication is provided solely by possession of the execution-bound Shared_Key established during the PQ_Hybrid_KEM exchange on `/execute`. The caller's `poll_output` method should send only `nonce` in the encrypted payload. The server returns 400 for decryption failures and 404 for unknown execution IDs — it does not return 401/403 on this endpoint, making the caller's 401/403 handling dead code.
 - Upstream security hardening (commit c667730) introduces three changes affecting the caller: (1) `execution_id` is now included in attestation user_data — the caller must verify it matches the response body; (2) post-decryption application errors are returned as encrypted error envelopes (HTTP 200 with `{"error": ..., "error_code": ...}` in the decrypted payload) — the caller must detect and handle these; (3) nonces are now mandatory on /execute and /output — the caller already sends them, so no code change needed for this.
 - The existing plaintext HTTP error handlers (400, 401, 403, 413, 503) in `execute()` remain valid for pre-decryption errors (malformed JSON, decryption failure, body size exceeded). Post-decryption errors (OIDC failures, repo mismatch, nonce duplicate, etc.) are now returned as encrypted envelopes with HTTP 200.
+- Upstream security hardening round 3 (commit e07531c) introduces output attestation rate limiting: the server may return `output_attestation_document: null` with `attestation_rate_limited: true` when the per-execution attestation budget is exhausted. The caller must treat this as a non-error condition. Additionally, the server now verifies that `commit_hash` matches the OIDC token's `sha` claim — this is already satisfied by the workflow passing `github.sha` as the commit_hash.
+- The output polling simplification (task 16) changes the caller from validating output attestation on every poll to only validating on the final poll (when `complete: true`). This avoids unnecessary TPM attestation generation on the server and simplifies the polling loop. The server still generates attestation on every poll (subject to rate limiting), but the caller ignores it during intermediate polls.
 
 ## Task Dependency Graph
 
 ```json
 {
   "waves": [
-    { "id": 1, "tasks": ["14.1", "14.2", "14.3"] },
-    { "id": 2, "tasks": ["14.4"] },
-    { "id": 3, "tasks": ["14.5"] },
-    { "id": 4, "tasks": ["15"] }
+    { "id": 1, "tasks": ["16.1"] },
+    { "id": 2, "tasks": ["16.2"] },
+    { "id": 3, "tasks": ["16.3"] },
+    { "id": 4, "tasks": ["17"] }
   ]
 }
 ```

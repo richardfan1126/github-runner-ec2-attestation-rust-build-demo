@@ -91,8 +91,11 @@ sequenceDiagram
     BS-->>RE: stdout with BINARY_SHA256 + BINARY_OCI_REF
     RE-->>CALLER: Encrypted execution response
     CALLER->>CALLER: Validate attestation, verify request binding (repo, commit, script_path, script_env_hash, execution_id)
-    CALLER->>RE: POST /execution/{id}/output (poll, encrypted: nonce only)
-    RE-->>CALLER: Encrypted output with attestation
+    CALLER->>RE: POST /execution/{id}/output (poll until complete, encrypted: nonce only)
+    RE-->>CALLER: Encrypted output (incremental stdout/stderr)
+    Note over CALLER,RE: Repeat polling until complete=true
+    RE-->>CALLER: Final response with output_attestation_document (or null if rate-limited)
+    CALLER->>CALLER: Validate output-integrity attestation (if present)
     CALLER-->>WF: Exit code 0, stdout, attestation docs
     WF->>WF: Parse BINARY_SHA256 and BINARY_OCI_REF from stdout
     WF->>GHCR: oras pull (temp binary)
@@ -181,6 +184,12 @@ Copied from `github-runner-ec2-attestation-caller`. This is the Python package t
 
 **Note on output-integrity attestation `user_data` format:** The output-integrity attestation's `user_data` field contains a JSON object `{"output_digest": "<sha256_hex>", "execution_id": "<uuid>"}` rather than a raw hex digest string. The `output_digest` is the SHA-256 hex digest of the canonical output (`stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}`). The caller's `verify_output_attestation` function parses this JSON and extracts the `output_digest` field for comparison against the locally computed digest. For backward compatibility, if `user_data` is not valid JSON or does not contain an `output_digest` key, the caller falls back to treating the entire `user_data` string as the raw hex digest.
 
+**Note on output polling strategy:** The caller polls /execution/{id}/output only to track execution progress (logging incremental stdout/stderr). Output attestation documents are NOT requested, validated, or stored during intermediate polls. Only on the final poll (when `complete: true`) does the caller validate the output-integrity attestation. This simplifies the polling loop and avoids unnecessary TPM attestation generation on the server.
+
+**Note on output attestation rate limiting:** The Remote Executor enforces a per-execution-ID rate limit on output attestation generation to prevent TPM resource exhaustion from frequent polling. When the attestation budget is exhausted, the server returns `output_attestation_document: null` with `attestation_rate_limited: true` — the output itself is still returned normally. The caller treats this as a non-error condition: if the final poll response has `attestation_rate_limited: true`, the caller logs an informational message and continues without failing. This is distinct from a true attestation failure.
+
+**Note on OIDC commit hash binding:** The Remote Executor verifies that the `commit_hash` field in the /execute request matches the `sha` claim from the validated OIDC token (case-insensitive comparison). If they don't match, the server rejects the request with HTTP 403. This means the workflow must always pass the current workflow's `github.sha` as the `commit_hash` — passing a different commit SHA will be rejected because the OIDC token's `sha` claim is bound to the commit that triggered the workflow run.
+
 **Outputs:**
 - Exit code (0 = success)
 - stdout/stderr from the remote execution (including the `BINARY_SHA256` and `BINARY_OCI_REF` markers)
@@ -195,7 +204,7 @@ The orchestrating GitHub Actions workflow.
 |---|---|---|---|
 | `server_url` | Yes | — | Base URL of the Remote Executor server |
 | `script_path` | No | `scripts/build-rust.sh` | Path to build script |
-| `commit_hash` | No | Current SHA | Git commit to build |
+| `commit_hash` | No | Current SHA | Git commit to build (must match OIDC token's `sha` claim) |
 | `repository_url` | No | Current repo | Git repository URL |
 | `audience` | No | — | OIDC audience value |
 | `server_url_allowlist` | No | — | Comma-separated allowed server URLs |
@@ -242,7 +251,7 @@ A JSON document that ties together the binary, attestation chain, and build meta
   "attestation": {
     "server_identity": "attestation-documents/server-identity.b64",
     "execution_acceptance": "attestation-documents/execution-acceptance.b64",
-    "output_integrity": "attestation-documents/output-integrity-poll-001.b64",
+    "output_integrity": "attestation-documents/output-integrity.b64",
     "manifest": "attestation-documents/manifest.json"
   }
 }
@@ -349,8 +358,8 @@ attestation-documents/
 ├── server-identity.payload.json
 ├── execution-acceptance.b64
 ├── execution-acceptance.payload.json
-├── output-integrity-poll-001.b64
-├── output-integrity-poll-001.payload.json
+├── output-integrity.b64
+├── output-integrity.payload.json
 └── manifest.json
 ```
 
@@ -393,7 +402,7 @@ Three areas of this feature contain pure logic suitable for property-based testi
 
 *For any* marker type (`BINARY_SHA256` or `BINARY_OCI_REF`) and *for any* valid marker value (64-char hex string for SHA256, non-empty string without newlines for OCI ref), embedding the marker in arbitrary stdout text as `<MARKER_TYPE>:<value>` and then parsing the stdout to extract the value SHALL return the original value.
 
-**Validates: Requirements 2.4, 2.5, 4.2, 4.3, 4.4**
+**Validates: Requirements 2.6, 2.7, 4.2, 4.3, 4.4**
 
 ### Property 2: Server URL allowlist acceptance
 
@@ -411,7 +420,7 @@ Three areas of this feature contain pure logic suitable for property-based testi
 
 *For any* dictionary of string key-value pairs (including the empty dictionary), computing the `script_env_hash` using the canonicalization algorithm (sort keys lexicographically, serialize as JSON with compact separators `(',', ':')`, SHA-256 hex digest) SHALL produce the same result as the Remote Executor's `_compute_script_env_hash` method. Specifically: the hash of `{}` SHALL always equal `sha256("{}")`, and for any non-empty dict the hash SHALL equal `sha256(json.dumps(dict, sort_keys=True, separators=(',', ':')))`.
 
-**Validates: Requirements 10.6, 10.7**
+**Validates: Requirements 11.1, 11.2**
 
 ## Error Handling
 
@@ -433,8 +442,10 @@ Three areas of this feature contain pure logic suitable for property-based testi
 |---|---|
 | `server_url` is empty | Fail job with `::error::` annotation |
 | `server_url` not in allowlist | Fail job with `::error::` annotation |
+| `commit_hash` does not match OIDC `sha` claim | Server rejects with HTTP 403 (encrypted error envelope); Caller raises CallerError |
 | Caller exits non-zero | Fail job, upload attestation docs (if any) |
 | Encrypted error envelope from server (post-decryption) | Caller raises CallerError with error message and error_code from envelope |
+| Output attestation rate-limited on final poll | Caller logs informational message, continues without failing |
 | Output integrity attestation `user_data` not valid JSON | Caller falls back to treating entire `user_data` as raw hex digest |
 | Output integrity digest mismatch | Caller raises CallerError with computed vs attested digest values |
 | `BINARY_SHA256` marker missing from stdout | Fail job with descriptive error |
@@ -481,21 +492,21 @@ Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}
 
 | Test | Requirement | Description |
 |---|---|---|
-| `test_parse_sha256_marker` | 2.4, 4.4 | Parse a known BINARY_SHA256 marker from sample stdout |
-| `test_parse_oci_ref_marker` | 2.5, 4.4 | Parse a known BINARY_OCI_REF marker from sample stdout |
+| `test_parse_sha256_marker` | 2.6, 4.4 | Parse a known BINARY_SHA256 marker from sample stdout |
+| `test_parse_oci_ref_marker` | 2.7, 4.4 | Parse a known BINARY_OCI_REF marker from sample stdout |
 | `test_missing_sha256_marker_raises` | 4.8 | Verify error when BINARY_SHA256 is missing |
 | `test_missing_oci_ref_marker_raises` | 4.8 | Verify error when BINARY_OCI_REF is missing |
 | `test_sha256_mismatch_detected` | 4.7 | Verify digest mismatch is detected |
 | `test_provenance_manifest_schema` | 5.2 | Verify manifest JSON matches expected schema |
 | `test_allowlist_empty_accepts_all` | 3.4 | Verify empty allowlist accepts any URL |
 | `test_allowlist_rejects_unlisted` | 3.4 | Verify URL not in allowlist is rejected |
-| `test_script_env_hash_empty_dict` | 10.6 | Verify empty dict produces sha256("{}") |
-| `test_script_env_hash_known_value` | 10.6 | Verify known dict produces expected hash |
-| `test_script_env_hash_mismatch_raises` | 10.8 | Verify CallerError raised on hash mismatch |
-| `test_execution_id_binding_verified` | 10.10 | Verify attested execution_id matches response body execution_id |
-| `test_execution_id_mismatch_raises` | 10.11 | Verify CallerError raised on execution_id mismatch |
-| `test_encrypted_error_envelope_detected` | 10.12 | Verify CallerError raised when decrypted response contains `error` field |
-| `test_encrypted_error_envelope_on_poll` | 10.14 | Verify CallerError raised when poll decrypted response contains `error` field |
+| `test_script_env_hash_empty_dict` | 11.1 | Verify empty dict produces sha256("{}") |
+| `test_script_env_hash_known_value` | 11.1 | Verify known dict produces expected hash |
+| `test_script_env_hash_mismatch_raises` | 11.3 | Verify CallerError raised on hash mismatch |
+| `test_execution_id_binding_verified` | 11.5 | Verify attested execution_id matches response body execution_id |
+| `test_execution_id_mismatch_raises` | 11.6 | Verify CallerError raised on execution_id mismatch |
+| `test_encrypted_error_envelope_detected` | 12.1 | Verify CallerError raised when decrypted response contains `error` field |
+| `test_encrypted_error_envelope_on_poll` | 12.3 | Verify CallerError raised when poll decrypted response contains `error` field |
 
 ### Smoke Tests
 
@@ -505,7 +516,7 @@ Tag format: **Feature: rust-attestated-build, Property {number}: {property_text}
 | `test_workflow_yaml_permissions` | 3.2 | Verify permissions in YAML |
 | `test_workflow_yaml_root_cert` | 8.4 | Verify ROOT_CERT_PEM env var in YAML |
 | `test_workflow_yaml_expected_pcrs` | 8.5 | Verify EXPECTED_PCRS env var in YAML |
-| `test_workflow_yaml_cleanup_step` | 11.1, 11.2 | Verify cleanup steps: version ID lookup and `actions/delete-package-versions@v5` with `if: always()` and `continue-on-error: true` |
+| `test_workflow_yaml_cleanup_step` | 14.1, 14.2 | Verify cleanup steps: version ID lookup and `actions/delete-package-versions@v5` with `if: always()` and `continue-on-error: true` |
 | `test_cargo_toml_binary_target` | 1.1 | Verify Cargo.toml has attested-hello target |
 | `test_pyproject_dependencies` | 8.1 | Verify pyproject.toml has caller dependencies |
 | `test_gitignore_patterns` | 8.2 | Verify .gitignore has required patterns |

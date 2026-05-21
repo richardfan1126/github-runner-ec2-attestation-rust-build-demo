@@ -23,6 +23,7 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 - **Attestation_Bundle**: A directory containing the server-identity, execution-acceptance, and output-integrity attestation documents and their manifest, produced by the Caller during execution.
 - **Temporary_GHCR_Package**: A temporary OCI artifact pushed to GHCR by the Build_Script from inside the enclave, used to transfer the Binary_Artifact to the GitHub Actions runner. The Build_Script installs the Oras CLI, authenticates to GHCR using the `GITHUB_TOKEN` (received in the encrypted execution payload), and pushes the binary via `oras push`. The Workflow pulls the binary using `oras pull`, and a cleanup step deletes the temporary package via the GitHub Packages REST API after the workflow completes (on both success and failure).
 - **GitHub_Attestation**: A Sigstore-based attestation created by the `actions/attest@v4` GitHub Action that binds a build artifact to the GitHub Actions workflow run, providing supply-chain provenance via GitHub's artifact attestation feature. Verified by consumers using `gh attestation verify`.
+- **Output_Attestation_Rate_Limiter**: A server-side per-execution-ID rate limiter that restricts the number of NitroTPM attestation document generations for output polling within a configurable time window. When the budget is exhausted, the server returns `output_attestation_document: null` with `attestation_rate_limited: true` — the output itself is still returned normally. This prevents frequent polling from turning TPM attestation into a resource-exhaustion path.
 
 ## Requirements
 
@@ -70,6 +71,7 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 7. THE Workflow SHALL invoke the Caller with the configured inputs, `--root-cert-pem`, `--expected-pcrs`, and `--attestation-output-dir attestation-documents`.
 8. WHEN the Caller completes with exit code 0, THE Workflow SHALL proceed to the signing and upload steps.
 9. IF the Caller exits with a non-zero exit code, THEN THE Workflow SHALL fail the job and upload any available attestation documents as artifacts.
+10. THE `commit_hash` passed to the Caller (and included in the /execute payload) MUST match the `sha` claim from the OIDC_Token that the Caller acquires from the GitHub Actions runtime. The Remote_Executor verifies this binding server-side (case-insensitive comparison) and rejects requests with HTTP 403 if the `commit_hash` does not match the OIDC `sha` claim. Therefore, the Workflow SHALL always pass the current workflow's `github.sha` as the `commit_hash` (or leave it as the default), ensuring the OIDC token's `sha` claim matches.
 
 ### Requirement 4: Binary Retrieval from GHCR and Verification in Workflow
 
@@ -156,18 +158,42 @@ This feature delivers a GitHub Actions workflow and supporting scripts that buil
 3. THE Workflow SHALL pass `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and the commit SHA to the Caller via `--script-env` arguments so they are forwarded to the Execution_Container.
 4. THE Build_Script SHALL receive these environment variables as container environment variables inside the Execution_Container (where the project is mounted read-only at `/workspace` and `/tmp/` is the writable directory) and use them for GHCR authentication and binary upload.
 5. IF any required environment variable (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`) is not set in the Execution_Container, THEN THE Build_Script SHALL exit with a non-zero exit code and a descriptive error message.
-6. THE Caller module SHALL compute a SHA-256 hex digest of the canonicalized `script_env` dictionary that was sent in the /execute payload, using the same canonicalization algorithm as the Remote Executor: sort keys lexicographically, serialize as JSON with compact separators (`(',', ':')`), no whitespace, then SHA-256 hex digest. WHEN `script_env` is empty or not provided, the digest SHALL be computed over `{}` (empty JSON object).
-7. WHEN the execution-acceptance attestation contains a `user_data` field with a `script_env_hash` value, THE Caller module SHALL verify that the attested `script_env_hash` matches the locally computed digest.
-8. IF the attested `script_env_hash` does not match the locally computed digest, THEN THE Caller module SHALL raise a CallerError with a descriptive message indicating the mismatch, including both the expected and attested values.
-9. THE Caller module in the `github-runner-ec2-attestation-caller` project SHALL also be updated with the same `script_env_hash` verification logic.
-10. WHEN the execution-acceptance attestation contains a `user_data` field with an `execution_id` value, THE Caller module SHALL verify that the attested `execution_id` matches the `execution_id` returned in the decrypted /execute response body.
-11. IF the attested `execution_id` does not match the response body `execution_id`, THEN THE Caller module SHALL raise a CallerError with a descriptive message indicating the mismatch.
-12. WHEN the Remote_Executor returns an HTTP 200 response on /execute whose decrypted payload contains an `error` field, THE Caller module SHALL treat it as an Encrypted_Error_Envelope and raise a CallerError with the `error` message and `error_code` from the envelope, rather than treating it as a successful execution response.
-13. THE Caller module SHALL distinguish pre-decryption errors (plaintext HTTP 400, 413, 429, 500) from post-decryption errors (Encrypted_Error_Envelope with HTTP 200) and handle both appropriately.
-14. WHEN polling /execution/{id}/output, THE Caller module SHALL also detect Encrypted_Error_Envelopes in decrypted responses and raise a CallerError with the enclosed error details.
-15. WHEN verifying output integrity, THE Caller module SHALL parse the output-integrity attestation's `user_data` field as a JSON object and extract the `output_digest` field for comparison against the locally computed digest. THE `user_data` JSON object contains `{"output_digest": "<hex>", "execution_id": "<uuid>"}`. For backward compatibility, if `user_data` is not valid JSON or does not contain an `output_digest` key, the Caller SHALL fall back to treating the entire `user_data` string as the raw hex digest.
 
-### Requirement 11: Temporary GHCR Package Cleanup
+### Requirement 11: Execution-Acceptance Attestation Verification
+
+**User Story:** As a developer, I want the Caller to verify that the execution-acceptance attestation binds to the exact request I sent, so that I can detect server-side tampering of the execution parameters.
+
+#### Acceptance Criteria
+
+1. THE Caller module SHALL compute a SHA-256 hex digest of the canonicalized `script_env` dictionary that was sent in the /execute payload, using the same canonicalization algorithm as the Remote Executor: sort keys lexicographically, serialize as JSON with compact separators (`(',', ':')`), no whitespace, then SHA-256 hex digest. WHEN `script_env` is empty or not provided, the digest SHALL be computed over `{}` (empty JSON object).
+2. WHEN the execution-acceptance attestation contains a `user_data` field with a `script_env_hash` value, THE Caller module SHALL verify that the attested `script_env_hash` matches the locally computed digest.
+3. IF the attested `script_env_hash` does not match the locally computed digest, THEN THE Caller module SHALL raise a CallerError with a descriptive message indicating the mismatch, including both the expected and attested values.
+4. THE Caller module in the `github-runner-ec2-attestation-caller` project SHALL also be updated with the same `script_env_hash` verification logic.
+5. WHEN the execution-acceptance attestation contains a `user_data` field with an `execution_id` value, THE Caller module SHALL verify that the attested `execution_id` matches the `execution_id` returned in the decrypted /execute response body.
+6. IF the attested `execution_id` does not match the response body `execution_id`, THEN THE Caller module SHALL raise a CallerError with a descriptive message indicating the mismatch.
+
+### Requirement 12: Encrypted Error Envelope Handling
+
+**User Story:** As a developer, I want the Caller to correctly detect and surface server-side application errors that are returned as encrypted envelopes, so that failures are reported clearly rather than misinterpreted as successful responses.
+
+#### Acceptance Criteria
+
+1. WHEN the Remote_Executor returns an HTTP 200 response on /execute whose decrypted payload contains an `error` field, THE Caller module SHALL treat it as an Encrypted_Error_Envelope and raise a CallerError with the `error` message and `error_code` from the envelope, rather than treating it as a successful execution response.
+2. THE Caller module SHALL distinguish pre-decryption errors (plaintext HTTP 400, 413, 429, 500) from post-decryption errors (Encrypted_Error_Envelope with HTTP 200) and handle both appropriately.
+3. WHEN polling /execution/{id}/output, THE Caller module SHALL also detect Encrypted_Error_Envelopes in decrypted responses and raise a CallerError with the enclosed error details.
+
+### Requirement 13: Output Polling and Output-Integrity Attestation
+
+**User Story:** As a developer, I want the Caller to poll for execution output and obtain a final output-integrity attestation after completion, so that I can verify the output was not tampered with in transit.
+
+#### Acceptance Criteria
+
+1. THE Caller module SHALL poll /execution/{id}/output to track execution progress (logging incremental stdout/stderr). THE Caller SHALL NOT request, validate, or store output attestation documents during intermediate polling. Output attestation is obtained only on the final poll after execution completes.
+2. WHEN the execution completes (the poll response contains `complete: true`), THE Caller module SHALL validate the output-integrity attestation from that final response. IF the final response contains `output_attestation_document`, THE Caller SHALL validate it. IF the final response has `output_attestation_document` set to null with `attestation_rate_limited: true`, THE Caller SHALL treat this as a non-error condition, log an informational message, and continue without failing.
+3. THE Caller module SHALL NOT fail when the Remote_Executor rate-limits output attestation generation (indicated by `output_attestation_document: null` and `attestation_rate_limited: true` in the response). This is a legitimate server behavior to prevent TPM resource exhaustion from frequent polling, not an error condition.
+4. WHEN verifying output integrity, THE Caller module SHALL parse the output-integrity attestation's `user_data` field as a JSON object and extract the `output_digest` field for comparison against the locally computed digest. THE `user_data` JSON object contains `{"output_digest": "<hex>", "execution_id": "<uuid>"}`. For backward compatibility, if `user_data` is not valid JSON or does not contain an `output_digest` key, the Caller SHALL fall back to treating the entire `user_data` string as the raw hex digest.
+
+### Requirement 14: Temporary GHCR Package Cleanup
 
 **User Story:** As a developer, I want the temporary GHCR package created by the build script to be automatically deleted after the workflow completes, so that it does not pollute the package registry.
 
