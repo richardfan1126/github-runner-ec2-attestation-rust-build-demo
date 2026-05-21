@@ -152,7 +152,7 @@ class TestProvenanceManifestSchema:
             "attestation-documents/execution-acceptance.b64"
         )
         assert manifest["attestation"]["output_integrity"] == (
-            "attestation-documents/output-integrity-poll-001.b64"
+            "attestation-documents/output-integrity.b64"
         )
         assert manifest["attestation"]["manifest"] == (
             "attestation-documents/manifest.json"

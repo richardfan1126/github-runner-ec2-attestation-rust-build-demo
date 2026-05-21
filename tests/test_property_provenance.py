@@ -66,7 +66,7 @@ timestamps = st.datetimes().map(lambda dt: dt.isoformat())
 _EXPECTED_ATTESTATION = {
     "server_identity": "attestation-documents/server-identity.b64",
     "execution_acceptance": "attestation-documents/execution-acceptance.b64",
-    "output_integrity": "attestation-documents/output-integrity-poll-001.b64",
+    "output_integrity": "attestation-documents/output-integrity.b64",
     "manifest": "attestation-documents/manifest.json",
 }
 

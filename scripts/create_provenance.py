@@ -17,7 +17,7 @@ _MANIFEST_VERSION = "1.0"
 _ATTESTATION_PATHS = {
     "server_identity": "attestation-documents/server-identity.b64",
     "execution_acceptance": "attestation-documents/execution-acceptance.b64",
-    "output_integrity": "attestation-documents/output-integrity-poll-001.b64",
+    "output_integrity": "attestation-documents/output-integrity.b64",
     "manifest": "attestation-documents/manifest.json",
 }
 

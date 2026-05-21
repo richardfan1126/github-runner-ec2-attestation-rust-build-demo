@@ -19,8 +19,7 @@ class AttestationArtifactCollector:
     File naming convention:
     - server-identity.b64 / server-identity.payload.json
     - execution-acceptance.b64 / execution-acceptance.payload.json
-    - output-integrity-poll-001.b64 / output-integrity-poll-001.payload.json
-    - output-integrity-poll-002.b64 / output-integrity-poll-002.payload.json
+    - output-integrity.b64 / output-integrity.payload.json
     - manifest.json
     """
 
@@ -35,7 +34,6 @@ class AttestationArtifactCollector:
         self._output_dir = Path(output_dir)
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._documents: list[dict] = []
-        self._output_poll_counter = 0
 
     @property
     def has_documents(self) -> bool:
@@ -132,20 +130,16 @@ class AttestationArtifactCollector:
         exit_code: int | None,
         output_digest: str,
     ) -> None:
-        """Save an output integrity attestation document and its attested payload.
+        """Save the output integrity attestation document and its attested payload.
 
-        Increments the internal poll counter and saves:
-        - output-integrity-poll-NNN.b64: The raw base64-encoded attestation document
-        - output-integrity-poll-NNN.payload.json: {stdout, stderr, exit_code, output_digest}
+        Saves:
+        - output-integrity.b64: The raw base64-encoded attestation document
+        - output-integrity.payload.json: {stdout, stderr, exit_code, output_digest}
 
-        NNN is zero-padded to 3 digits (e.g., 001, 002, ...).
         Records the entry in the internal manifest list.
         """
-        self._output_poll_counter += 1
-        padded = f"{self._output_poll_counter:03d}"
-
-        attestation_filename = f"output-integrity-poll-{padded}.b64"
-        payload_filename = f"output-integrity-poll-{padded}.payload.json"
+        attestation_filename = "output-integrity.b64"
+        payload_filename = "output-integrity.payload.json"
 
         (self._output_dir / attestation_filename).write_text(attestation_b64)
         (self._output_dir / payload_filename).write_text(
@@ -162,7 +156,7 @@ class AttestationArtifactCollector:
 
         self._documents.append(
             {
-                "phase": f"output-integrity-poll-{self._output_poll_counter}",
+                "phase": "output-integrity",
                 "attestation_filename": attestation_filename,
                 "payload_filename": payload_filename,
                 "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
