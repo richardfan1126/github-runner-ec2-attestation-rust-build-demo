@@ -38,7 +38,7 @@ Single repo — container image + shell build script + CI workflow + docs. Prima
 
 **⚠️ CRITICAL**: The story-specific test tasks (T003, T008) depend on this module existing.
 
-- [ ] T002 Create the shared static-test module `tests/test_build_image_hardening.py` with pytest scaffolding and helpers that load the raw text of `Dockerfile` and `scripts/build-rust.sh` from the repo root (mirror the path/text-inspection style of `tests/test_security_hardening.py`). No assertions yet — just the loader fixtures/helpers the per-story tests will use.
+- [X] T002 Create the shared static-test module `tests/test_build_image_hardening.py` with pytest scaffolding and helpers that load the raw text of `Dockerfile` and `scripts/build-rust.sh` from the repo root (mirror the path/text-inspection style of `tests/test_security_hardening.py`). No assertions yet — just the loader fixtures/helpers the per-story tests will use.
 
 **Checkpoint**: Pinned literals captured + shared test module exists — user story work can begin.
 
