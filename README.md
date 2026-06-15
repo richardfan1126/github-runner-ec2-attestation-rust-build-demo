@@ -7,9 +7,9 @@ Builds a Rust binary inside an attested AWS Nitro Enclave environment, verifies 
 This project demonstrates an end-to-end attested build pipeline:
 
 1. A GitHub Actions workflow dispatches a build request to a Remote Executor running in an AWS Nitro Enclave
-2. The Remote Executor compiles a Rust binary (`attested-hello`) inside the enclave
-3. The binary is uploaded to GitHub Actions Artifacts from within the enclave using the GitHub Actions Artifacts API
-4. The workflow downloads the binary, verifies its SHA-256 digest against the value reported by the build script
+2. The Remote Executor compiles a Rust binary (`attested-hello`) inside the enclave using a pre-installed, digest-pinned toolchain — no run-time installs
+3. The binary is pushed to a temporary GHCR package from within the enclave using the pre-installed oras CLI
+4. The workflow pulls the binary from the temporary GHCR package and verifies its SHA-256 digest against the value reported by the build script
 5. The binary, attestation documents, and a provenance manifest are packaged and pushed to GHCR as an OCI artifact via Oras
 6. A Sigstore-based GitHub Artifact Attestation is created for supply-chain provenance
 
@@ -21,21 +21,21 @@ This project demonstrates an end-to-end attested build pipeline:
 │                                                                 │
 │  1. Validate inputs                                             │
 │  2. Checkout repository                                         │
-│  3. Install Python + caller dependencies                        │
+│  3. Install Python + caller dependencies + oras CLI             │
 │  4. Invoke caller module ──► Remote Executor (Nitro Enclave)    │
-│     │                         ├─ Install Rust toolchain         │
 │     │                         ├─ cargo build --release          │
 │     │                         ├─ Compute SHA-256 of binary      │
-│     │                         └─ Upload binary to GH Artifacts  │
+│     │                         └─ Push binary to GHCR tmp pkg    │
 │     ◄── stdout markers + attestation documents ─────────────┘   │
-│  5. Parse BINARY_SHA256 and BINARY_ARTIFACT_NAME from stdout    │
-│  6. Download binary artifact                                    │
+│  5. Parse BINARY_SHA256 and BINARY_OCI_REF from stdout          │
+│  6. Pull binary from GHCR tmp package (oras pull)               │
 │  7. Verify SHA-256 digest matches                               │
 │  8. Create provenance manifest                                  │
 │  9. Package attestation bundle                                  │
 │ 10. oras push (binary + attestation bundle + provenance) → GHCR │
 │ 11. gh attestation create (Sigstore) → GHCR                     │
-│ 12. Upload attestation-documents as Actions artifact             │
+│ 12. Cleanup temporary GHCR package                              │
+│ 13. Upload attestation-documents as Actions artifact             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
