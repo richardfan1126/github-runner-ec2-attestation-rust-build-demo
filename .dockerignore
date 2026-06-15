@@ -1,0 +1,14 @@
+.git
+.venv
+.pytest_cache
+.hypothesis
+dist/
+specs/
+__pycache__
+*.pyc
+*.pyo
+.DS_Store
+.idea
+.vscode
+*.log
+.env*

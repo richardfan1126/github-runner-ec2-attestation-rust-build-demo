@@ -216,3 +216,104 @@ def test_build_script_markers_emitted_after_oras_push(
     assert push_match.start() < ref_marker, (
         "BINARY_OCI_REF marker must appear AFTER the oras push in the file"
     )
+
+
+# ===========================================================================
+# US2 (T008) — static assertions over ``Dockerfile``
+# ===========================================================================
+#
+# These inspect the *text* of the ``Dockerfile`` to assert the supply-chain
+# and hardening invariants for User Story 2 (FR-004, FR-004a, FR-006, FR-002):
+# digest-pinned base, exact-version tool installs, checksum-verified downloads,
+# rootless default user, no run-time install at startup, and toolchain on PATH.
+
+
+def test_dockerfile_from_has_digest(dockerfile_text: str) -> None:
+    """FROM line pins the base image by content digest, never a floating tag (FR-004a)."""
+    assert re.search(r"^FROM\s+\S+@sha256:[0-9a-f]+", dockerfile_text, re.MULTILINE), (
+        "Dockerfile FROM must pin the base image by content digest (@sha256:…)"
+    )
+
+
+def test_dockerfile_rustup_pinned_channel_not_stable(dockerfile_text: str) -> None:
+    """Rust toolchain pinned to an exact X.Y.Z channel, not 'stable'; --profile minimal (FR-004)."""
+    channel_match = re.search(r"--default-toolchain\s+(\S+)", dockerfile_text)
+    assert channel_match, (
+        "Dockerfile must install the Rust toolchain with --default-toolchain <version>"
+    )
+    channel = channel_match.group(1)
+    assert re.match(r"^\d+\.\d+\.\d+$", channel), (
+        f"--default-toolchain must be an exact X.Y.Z version (never 'stable'); "
+        f"got: {channel!r}"
+    )
+    assert "--profile minimal" in dockerfile_text, (
+        "Dockerfile must install the Rust toolchain with --profile minimal"
+    )
+
+
+def test_dockerfile_apt_packages_pinned_version(dockerfile_text: str) -> None:
+    """apt installs use exact pkg=<ver> pinning for the C linker packages and curl (FR-004)."""
+    assert re.search(r"gcc=[\d:][^\s]+", dockerfile_text), (
+        "Dockerfile must pin gcc with an exact version (gcc=<ver>)"
+    )
+    assert re.search(r"curl=[\d.][^\s]+", dockerfile_text), (
+        "Dockerfile must pin curl with an exact version (curl=<ver>)"
+    )
+
+
+def test_dockerfile_downloads_sha256_verified(dockerfile_text: str) -> None:
+    """Each download (rustup-init, oras tarball) is sha256sum-verified before use (FR-004)."""
+    sha256_positions = [m.start() for m in re.finditer(r"sha256sum", dockerfile_text)]
+    assert len(sha256_positions) >= 2, (
+        "Dockerfile must run sha256sum at least twice — once per download "
+        f"(rustup-init, oras tarball); found {len(sha256_positions)}"
+    )
+    # sha256sum must appear before rustup-init is invoked
+    rustup_exec = dockerfile_text.find("/tmp/rustup-init -y")
+    assert rustup_exec > 0, "expected rustup-init invocation (/tmp/rustup-init -y)"
+    assert any(p < rustup_exec for p in sha256_positions), (
+        "rustup-init must be sha256sum-verified before it is executed"
+    )
+    # sha256sum must appear (twice) before the oras tarball is extracted
+    oras_extract = re.search(r"tar\b.*oras", dockerfile_text)
+    assert oras_extract, "expected oras tarball extraction (tar … oras)"
+    sha256_before_oras = sum(1 for p in sha256_positions if p < oras_extract.start())
+    assert sha256_before_oras >= 2, (
+        "oras tarball must be sha256sum-verified before extraction "
+        f"(expected ≥ 2 sha256sum checks before tar; found {sha256_before_oras})"
+    )
+
+
+def test_dockerfile_user_is_65534(dockerfile_text: str) -> None:
+    """Image ends with USER 65534:65534 to match the executor's hardened default (FR-006)."""
+    assert re.search(r"^USER\s+65534:65534\s*$", dockerfile_text, re.MULTILINE), (
+        "Dockerfile must contain 'USER 65534:65534'"
+    )
+
+
+def test_dockerfile_no_runtime_install_at_startup(dockerfile_text: str) -> None:
+    """No CMD/ENTRYPOINT that triggers a run-time package install or toolchain download (FR-002)."""
+    pkg_install = re.compile(r"\b(?:apt-get|apt|dnf|yum|apk)\b[^\n]*\b(?:install|add)\b")
+    toolchain_dl = re.compile(r"sh\.rustup\.rs|rustup-init|rustup\.rs")
+    for line in dockerfile_text.splitlines():
+        if re.match(r"\s*(?:CMD|ENTRYPOINT)\b", line):
+            assert not pkg_install.search(line), (
+                f"CMD/ENTRYPOINT must not invoke a package manager install: {line!r}"
+            )
+            assert not toolchain_dl.search(line), (
+                f"CMD/ENTRYPOINT must not download/install a toolchain: {line!r}"
+            )
+
+
+def test_dockerfile_env_path_includes_toolchain(dockerfile_text: str) -> None:
+    """ENV PATH includes the pre-installed toolchain bin directory and /usr/local/bin (FR-002)."""
+    env_path = re.search(r'^ENV\s+PATH\s*=?\s*"?([^"\n]+)"?', dockerfile_text, re.MULTILINE)
+    assert env_path, "Dockerfile must set ENV PATH"
+    path_value = env_path.group(1)
+    assert re.search(r"/opt/rust|toolchains", path_value), (
+        f"ENV PATH must include the Rust toolchain bin directory; got: {path_value!r}"
+    )
+    assert "/usr/local/bin" in path_value, (
+        f"ENV PATH must include /usr/local/bin (where oras is installed); "
+        f"got: {path_value!r}"
+    )
