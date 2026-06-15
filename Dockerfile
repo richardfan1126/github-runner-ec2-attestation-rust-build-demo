@@ -4,6 +4,7 @@ FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf8
 # Versions resolved against the pinned base digest (research R10).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        ca-certificates=20230311+deb12u1 \
         gcc=4:12.2.0-3 \
         libc6-dev=2.36-9+deb12u14 \
         curl=7.88.1-10+deb12u14 && \

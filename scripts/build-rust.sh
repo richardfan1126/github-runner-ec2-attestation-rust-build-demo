@@ -117,7 +117,8 @@ if [ ! -d "${WORKSPACE_RUST_PROJECT}" ]; then
 fi
 
 rm -rf "${TMP_RUST_PROJECT}"
-cp -r "${WORKSPACE_RUST_PROJECT}" "${TMP_RUST_PROJECT}" \
+mkdir -p "${TMP_RUST_PROJECT}"
+find "${WORKSPACE_RUST_PROJECT}" -mindepth 1 -maxdepth 1 ! -name 'target' -exec cp -r {} "${TMP_RUST_PROJECT}/" \; \
     || die "failed to copy Rust project from ${WORKSPACE_RUST_PROJECT} into scratch at ${TMP_RUST_PROJECT}"
 
 echo "Rust project staged at ${TMP_RUST_PROJECT}" >&2

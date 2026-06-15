@@ -252,12 +252,15 @@ def test_dockerfile_rustup_pinned_channel_not_stable(dockerfile_text: str) -> No
 
 
 def test_dockerfile_apt_packages_pinned_version(dockerfile_text: str) -> None:
-    """apt installs use exact pkg=<ver> pinning for the C linker packages and curl (FR-004)."""
+    """apt installs use exact pkg=<ver> pinning for the C linker packages, curl, and ca-certs (FR-004)."""
     assert re.search(r"gcc=[\d:][^\s]+", dockerfile_text), (
         "Dockerfile must pin gcc with an exact version (gcc=<ver>)"
     )
     assert re.search(r"curl=[\d.][^\s]+", dockerfile_text), (
         "Dockerfile must pin curl with an exact version (curl=<ver>)"
+    )
+    assert re.search(r"ca-certificates=[\d.][^\s]+", dockerfile_text), (
+        "Dockerfile must pin ca-certificates with an exact version (ca-certificates=<ver>)"
     )
 
 

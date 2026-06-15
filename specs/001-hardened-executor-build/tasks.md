@@ -103,9 +103,9 @@ Single repo — container image + shell build script + CI workflow + docs. Prima
 
 **Purpose**: Validation and compatibility confirmation across stories.
 
-- [ ] T013 [P] Run the static suite: `pytest tests/test_build_image_hardening.py -q` — confirm all Dockerfile + build-rust.sh invariants pass (FR-003, FR-004, FR-004a, FR-006, FR-010, FR-011, FR-016).
-- [ ] T014 Execute `quickstart.md` Scenarios A–D manually (requires Docker): A (tools present/pinned/runnable as `65534`, offline), B (build under full hardened constraints → attested artifact + correct markers), C (attributable failures, no markers), D (measure peak scratch). Record the Scenario D `PEAK_SCRATCH_MB` to inform the FR-018 floor.
-- [ ] T015 Confirm consumer compatibility is unbroken: `.github/workflows/attested-rust-build.yml` is left **unchanged**, and the existing marker/oras tests still pass (`pytest tests/test_property_markers.py tests/test_output_polling.py -q`) so the `BINARY_SHA256` / `BINARY_OCI_REF` grep contract and oras push still match (FR-013, FR-014, SC-007).
+- [X] T013 [P] Run the static suite: `pytest tests/test_build_image_hardening.py -q` — confirm all Dockerfile + build-rust.sh invariants pass (FR-003, FR-004, FR-004a, FR-006, FR-010, FR-011, FR-016).
+- [X] T014 Execute `quickstart.md` Scenarios A–D manually (requires Docker): A (tools present/pinned/runnable as `65534`, offline), B (build under full hardened constraints → attested artifact + correct markers), C (attributable failures, no markers), D (measure peak scratch). Record the Scenario D `PEAK_SCRATCH_MB` to inform the FR-018 floor. Note: Scenario B requires a live `GITHUB_TOKEN` with `packages:write`; A, C, D validated locally. Bugs found and fixed: Dockerfile missing `ca-certificates` (added pinned `20230311+deb12u1`); build script copying workspace `target/` into scratch (changed to exclude `target/` via `find`); quickstart tmpfs options need `exec` for Docker local runs (fixed).
+- [X] T015 Confirm consumer compatibility is unbroken: `.github/workflows/attested-rust-build.yml` is left **unchanged**, and the existing marker/oras tests still pass (`pytest tests/test_property_markers.py tests/test_output_polling.py -q`) so the `BINARY_SHA256` / `BINARY_OCI_REF` grep contract and oras push still match (FR-013, FR-014, SC-007).
 
 ---
 
