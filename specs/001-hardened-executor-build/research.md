@@ -113,6 +113,27 @@ This document resolves the implementation unknowns implied by the spec. The spec
 
 ---
 
+## R10. Captured pinned literals (T001)
+
+**Captured**: 2026-06-15 (Phase 1 / Setup task T001). These are the exact, verifiable values the `Dockerfile` (T009) must hard-code. Each was resolved against the pinned base / official release artifact at capture time; re-capture before a fresh build if upstream re-publishes.
+
+| Literal | Value | Source / verification command |
+|---------|-------|-------------------------------|
+| `debian:bookworm-slim` content digest (multi-arch index) | `sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716` | `docker buildx imagetools inspect debian:bookworm-slim` → top-level `Digest:` |
+| Rust stable channel (exact `X.Y.Z`, never `stable`) | `1.96.0` | `curl -fsS https://static.rust-lang.org/dist/channel-rust-stable.toml` → `[pkg.rust] version = "1.96.0 (ac68faa20 2026-05-25)"` |
+| `gcc` apt version (meta-package; registers `/usr/bin/cc` alternative — see T009) | `4:12.2.0-3` | `apt-cache policy gcc` inside the pinned base |
+| `libc6-dev` apt version | `2.36-9+deb12u14` | `apt-cache policy libc6-dev` inside the pinned base |
+| `curl` apt version | `7.88.1-10+deb12u14` | `apt-cache policy curl` inside the pinned base |
+| `oras_1.3.2_linux_amd64.tar.gz` SHA-256 | `9229ccc6d17bb282039ad4a69abb16dcb887a5bce567c075d731d9b3c7ad8eaf` | `oras_1.3.2_checksums.txt` from the `v1.3.2` GitHub release |
+| `rustup-init` (x86_64-unknown-linux-gnu) SHA-256 | `4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10` | `https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init.sha256` |
+
+**Notes for T009**:
+- The apt versions were resolved against the **pinned** base (`debian@sha256:96e378…`), so they install cleanly with `pkg=<ver>` against that exact image's apt index. If the base digest is re-captured, re-resolve these three versions.
+- Install the **`gcc` meta-package** (version `4:12.2.0-3`), not a bare `gcc-12` — its postinst registers the `/usr/bin/cc` update-alternatives entry that both T005's preflight and cargo's link step require (R4).
+- The `rustup-init.sha256` file is published as ``<sha>  *./rustup-init``; verify with a `sha256sum -c` after rewriting the path, or compare the bare hash above.
+
+---
+
 ## Resolved unknowns summary
 
 | # | Unknown | Resolution |
@@ -126,5 +147,6 @@ This document resolves the implementation unknowns implied by the spec. The spec
 | R7 | Remove run-time installs | Delete Step 0 + rustup-install + oras download paths entirely |
 | R8 | Image publish CI | `build-image.yml` via build-push-action, digest → step summary |
 | R9 | Scratch floor | ≥4 GiB documented with basis + measurement method |
+| R10 | Pinned literals (T001) | Captured: base digest, Rust 1.96.0, gcc/libc6-dev/curl apt versions, oras + rustup-init SHA-256 |
 
 **Output**: All implementation unknowns resolved. No blocking `NEEDS CLARIFICATION` remain. Proceed to Phase 1.

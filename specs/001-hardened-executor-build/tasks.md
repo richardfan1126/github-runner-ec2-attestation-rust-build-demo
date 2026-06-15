@@ -28,7 +28,7 @@ Single repo — container image + shell build script + CI workflow + docs. Prima
 
 **Purpose**: Capture the concrete, verifiable literals the image build needs (research fixes the *method*; the Dockerfile needs *real values*).
 
-- [ ] T001 Capture and record the exact pinned literals required by the `Dockerfile`: the `debian:bookworm-slim` base image **content digest** (`docker buildx imagetools inspect debian:bookworm-slim`, per research R2); the exact stable rustup channel `X.Y.Z` (current stable, never `stable`, per R3); the exact apt package versions for `gcc` / `libc6-dev` / `curl` resolved against the pinned base's apt index (R3); the `oras` `1.3.2` `linux_amd64` tarball **SHA-256** from the release `*_checksums.txt`; and the rustup installer **SHA-256**. Record these values in `specs/001-hardened-executor-build/research.md` (or a short note alongside it) so T009 can hard-code them verbatim.
+- [X] T001 Capture and record the exact pinned literals required by the `Dockerfile`: the `debian:bookworm-slim` base image **content digest** (`docker buildx imagetools inspect debian:bookworm-slim`, per research R2); the exact stable rustup channel `X.Y.Z` (current stable, never `stable`, per R3); the exact apt package versions for `gcc` / `libc6-dev` / `curl` resolved against the pinned base's apt index (R3); the `oras` `1.3.2` `linux_amd64` tarball **SHA-256** from the release `*_checksums.txt`; and the rustup installer **SHA-256**. Record these values in `specs/001-hardened-executor-build/research.md` (or a short note alongside it) so T009 can hard-code them verbatim.
 
 ---
 
