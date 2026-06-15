@@ -39,6 +39,60 @@ This project demonstrates an end-to-end attested build pipeline:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Configuring the Hardened Build Image (Operator Setup)
+
+### Build-image reference
+
+Point the executor at the **immutable-digest** reference published by the `Build Hardened Build Image`
+workflow — never a floating tag:
+
+```
+ghcr.io/<owner>/github-runner-ec2-attestation-rust-build-demo/build-image@sha256:<digest>
+```
+
+Obtain the current digest from the **Build Hardened Build Image** workflow's job summary after it
+completes. The summary prints the full immutable reference in the form:
+
+```
+ghcr.io/<owner>/github-runner-ec2-attestation-rust-build-demo/build-image@sha256:abc123…
+```
+
+Re-pin whenever `Dockerfile` or `scripts/build-rust.sh` changes — each push to those paths triggers a
+new workflow run that produces a new digest.
+
+### Minimum writable scratch-mount size
+
+Configure the executor's writable tmpfs scratch mount to **≥ 4 GiB**. This floor covers:
+
+- Rust toolchain writable home/caches (`CARGO_HOME` — index, lock, metadata)
+- Release build artifacts (`CARGO_TARGET_DIR/release/` — compiled objects + final binary)
+- Source copy staged to scratch (`rust-project/`)
+- oras authentication and push scratch
+- Headroom for filesystem overhead
+
+Actual peak scratch for `attested-hello` (zero crate dependencies) is expected to be well under 4 GiB;
+this floor stays conservative until measured. To validate or lower it, run `quickstart.md` Scenario D,
+which reports `PEAK_SCRATCH_MB` for a real release build.
+
+### No executor security changes required
+
+Change **nothing** in the executor's security configuration. The image and build script run under the
+executor's hardened defaults without modification:
+
+| Setting | Executor default | Required change |
+|---|---|---|
+| User | `65534:65534` | None |
+| Root filesystem | Read-only | None |
+| Workspace mount | Read-only | None |
+| Linux capabilities | Default set (no extras) | None |
+| `no-new-privileges` | Enabled | None |
+| Network egress | Permitted | None (required for GHCR push) |
+
+The only pre-existing executor permission this build relies on is **outbound network egress** for the
+final `oras push` to GHCR. All other security settings remain at their hardened defaults.
+
+---
+
 ## Triggering the Workflow
 
 The workflow is triggered via `workflow_dispatch` from the GitHub Actions UI or the GitHub CLI.

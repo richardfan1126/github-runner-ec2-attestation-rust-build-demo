@@ -93,7 +93,7 @@ Single repo — container image + shell build script + CI workflow + docs. Prima
 
 ### Implementation for User Story 3
 
-- [ ] T012 [US3] Update `README.md` with an operator-guidance section: the exact build-image reference expressed as an **immutable digest** (`ghcr.io/<owner>/<repo>/build-image@sha256:<digest>`, never a floating tag — FR-017); the **minimum writable scratch-mount size** as a conservative ≥4 GiB floor, stating its **basis** (toolchain writable home/caches + downloaded artifacts + release `target/` + headroom) and noting it MAY be validated/lowered by measuring peak scratch (FR-018); and a clear statement that compatibility comes from the image + build script alone — operators change **no** executor security setting (user, rootfs/workspace mode, caps, no-new-privileges), with network egress the sole pre-existing exception (FR-019, FR-019a; research R9).
+- [X] T012 [US3] Update `README.md` with an operator-guidance section: the exact build-image reference expressed as an **immutable digest** (`ghcr.io/<owner>/<repo>/build-image@sha256:<digest>`, never a floating tag — FR-017); the **minimum writable scratch-mount size** as a conservative ≥4 GiB floor, stating its **basis** (toolchain writable home/caches + downloaded artifacts + release `target/` + headroom) and noting it MAY be validated/lowered by measuring peak scratch (FR-018); and a clear statement that compatibility comes from the image + build script alone — operators change **no** executor security setting (user, rootfs/workspace mode, caps, no-new-privileges), with network egress the sole pre-existing exception (FR-019, FR-019a; research R9).
 
 **Checkpoint**: All three user stories are independently satisfiable from their artifacts.
 
