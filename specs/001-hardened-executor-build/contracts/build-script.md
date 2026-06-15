@@ -62,7 +62,8 @@ Every failure: **non-zero exit** + stderr message naming the **condition** and t
 | Condition | Message names | Markers emitted? |
 |---|---|---|
 | Missing tool | the tool (e.g. `oras`) | no |
-| Write outside scratch | the target path + that it's outside scratch | no |
+| Write outside scratch | OS-enforced: read-only rootfs/workspace denies it (`EROFS`); the failing command's error (incl. the path) is surfaced — the script does not classify "outside scratch" | no |
+| Scratch not writable (up-front) | the scratch path (script write-probe) | no |
 | Scratch exhausted | that the writable scratch mount was filled | no |
 | Compile/link failure | the failing build step | no |
 | Blocked egress / push failure | the push/egress failure | no |
