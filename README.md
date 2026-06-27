@@ -41,24 +41,23 @@ This project demonstrates an end-to-end attested build pipeline:
 
 ## Configuring the Hardened Build Image (Operator Setup)
 
-### Build-image reference
+### Build environment: upstream rust-build flavor
 
-Point the executor at the **immutable-digest** reference published by the `Build Hardened Build Image`
-workflow — never a floating tag:
+The execution container image is **not** published by this repository. It is provided by
+the upstream `rust-build` flavor (`github-runner-ec2-attestation/flavors/rust-build/`),
+which is baked offline into a per-flavor, PCR4-bound attestable AMI by the upstream pipeline —
+nothing is pulled from a registry at executor runtime.
 
-```
-ghcr.io/<owner>/github-runner-ec2-attestation-rust-build-demo/build-image@sha256:<digest>
-```
+To run this build, configure the executor to use the AMI produced for the `rust-build` flavor.
+The upstream pipeline records the flavor image digest in `flavors.lock` and bakes it into the
+AMI's dm-verity-sealed root at build time; the PCR4 value in the AMI binds the executor to
+that exact image digest. Refer to the `github-runner-ec2-attestation` repository for flavor
+selection and AMI provisioning instructions.
 
-Obtain the current digest from the **Build Hardened Build Image** workflow's job summary after it
-completes. The summary prints the full immutable reference in the form:
-
-```
-ghcr.io/<owner>/github-runner-ec2-attestation-rust-build-demo/build-image@sha256:abc123…
-```
-
-Re-pin whenever `Dockerfile` or `scripts/build-rust.sh` changes — each push to those paths triggers a
-new workflow run that produces a new digest.
+> **Model change:** The previous model required operators to pin a
+> `build-image@sha256:<digest>` from this repository's GHCR into the executor's container
+> config. That model no longer applies — select the `rust-build` flavor AMI from the upstream
+> pipeline instead.
 
 ### Minimum writable scratch-mount size
 
@@ -76,8 +75,9 @@ which reports `PEAK_SCRATCH_MB` for a real release build.
 
 ### No executor security changes required
 
-Change **nothing** in the executor's security configuration. The image and build script run under the
-executor's hardened defaults without modification:
+Change **nothing** in the executor's security configuration. Compatibility comes from the upstream
+`rust-build` flavor's image and this repo's build script alone — both run under the executor's
+hardened defaults without modification:
 
 | Setting | Executor default | Required change |
 |---|---|---|

@@ -2,13 +2,17 @@
 
 ## Purpose
 
-Define the Rust project, the purpose-built container build image, and the build
-script that compiles the `attested-hello` binary and transfers it to GHCR — all
-running unmodified under the Remote Executor's hardened, default container-security
-posture (rootless `65534:65534`, read-only root filesystem, read-only workspace,
-no privilege escalation, default capabilities, a single writable tmpfs scratch
-mount, with outbound network egress as the only assumed exception). It also
-defines the operator documentation needed to point the executor at this image.
+Define the Rust project and the build script that compile the `attested-hello`
+binary and transfer it to GHCR — both running unmodified under the Remote
+Executor's hardened, default container-security posture (rootless `65534:65534`,
+read-only root filesystem, read-only workspace, no privilege escalation, default
+capabilities, a single writable tmpfs scratch mount, with outbound network egress
+as the only assumed exception). The build environment (execution container image)
+is provided by the upstream `rust-build` flavor
+(`github-runner-ec2-attestation/flavors/rust-build/`), baked into a per-flavor
+PCR4-bound attestable AMI. This capability documents the toolchain contract the
+build script depends on and the operator documentation needed to select and run
+the upstream flavor.
 
 This capability covers everything that runs *inside* the execution container. The
 GitHub Actions orchestration around it is specified in
@@ -37,53 +41,22 @@ the `attested-hello` binary artifact.
 - **WHEN** the `attested-hello` binary is executed
 - **THEN** it prints a version string and a build timestamp to stdout
 
-### Requirement: Build Image Ships All Tools Pre-Installed
+### Requirement: Build Script Depends on the Upstream rust-build Flavor's Toolchain Contract
 
-The repository SHALL contain a Dockerfile defining a purpose-built build image
-that pre-installs every tool the build needs, so the build performs no run-time
-software installation.
+The build script SHALL depend on a fixed toolchain contract provided by the upstream
+`rust-build` flavor (`github-runner-ec2-attestation/flavors/rust-build/`), not on any image
+built in this repository. The repository SHALL record this contract — the tools, paths, and
+versions the build script assumes — so divergence from the upstream flavor is detectable.
 
-#### Scenario: Required toolchain is present without installation
+#### Scenario: Contract enumerates the tools, paths, and versions the build assumes
 
-- **WHEN** the image is built from the checked-in Dockerfile and inspected
-- **THEN** the stable Rust toolchain (cargo and rustc), a C compiler/linker capable of the final link step, curl, and the oras CLI are all present and executable without installing anything further
+- **WHEN** the toolchain contract is inspected (in the spec and where `scripts/build-rust.sh` declares its defaults)
+- **THEN** it states that the execution image must provide `cargo`, `rustc`, a C linker (`cc`), `curl`, and `oras` on the runtime PATH for the unprivileged user `65534:65534`, with `RUSTUP_HOME=/opt/rust` and the real toolchain binaries at `/opt/rust/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin`, and names the upstream `rust-build` flavor as the provider of that image
 
-#### Scenario: No run-time install is needed or attempted
+#### Scenario: Build script assumes the contract without re-installing or re-pinning
 
-- **WHEN** the build runs from this image
-- **THEN** every tool it requires is already present before the container starts and no package-manager invocation or toolchain download occurs at run time
-
-### Requirement: Build Image Is Reproducible and Pinned
-
-The build image SHALL be reproducible: its base image, its OS packages, and its
-out-of-band tool downloads are all pinned, and the published image is referenceable
-by an immutable digest.
-
-#### Scenario: Base image and tools are version-pinned
-
-- **WHEN** the Dockerfile is inspected
-- **THEN** the base image is pinned by content digest (not a floating tag), the Rust toolchain is pinned to an exact stable channel (e.g. `1.96.0`, not `stable`), the C compiler/linker and curl are pinned distro packages (`pkg=<exact version>`), and the oras CLI is a pinned-version release
-
-#### Scenario: Out-of-band downloads are checksum-verified
-
-- **WHEN** the image build fetches the rustup installer or the oras release tarball
-- **THEN** each download is verified against a known SHA-256 checksum before use
-
-#### Scenario: Image is published by CI and referenceable by digest
-
-- **WHEN** the in-repo image-publishing CI workflow runs
-- **THEN** it builds the image from the checked-in Dockerfile, publishes it to this repository's GHCR namespace, and surfaces the resulting immutable image digest so consumers can pin to it
-
-### Requirement: Tools Are Usable by the Unprivileged Default User
-
-All pre-installed tools SHALL be invocable by the executor's unprivileged default
-user (`65534:65534`, nobody:nogroup) with no root required and reachable on the
-runtime PATH.
-
-#### Scenario: Toolchain runs rootless
-
-- **WHEN** the image runs as UID:GID `65534:65534`
-- **THEN** every required tool (cargo, rustc, the C linker, curl, oras) is on the runtime PATH and usable without root
+- **WHEN** `scripts/build-rust.sh` runs in the flavor's execution container
+- **THEN** it relies on the contract's pre-installed tools and paths, performs no run-time install, and this repository builds and publishes no image of its own to satisfy them
 
 ### Requirement: Build Writes Only Under the Scratch Mount
 
@@ -183,14 +156,15 @@ exhausted, or egress is blocked.
 
 ### Requirement: Operator Documentation for Executor Configuration
 
-The repository SHALL document, discoverably in the README (or a top-level doc it
-prominently links), exactly how to point the executor at this build image and what
-the executor must provide.
+The repository SHALL document, discoverably in the README (or a top-level doc it prominently
+links), how an operator runs this build against the upstream `rust-build` flavor — which
+flavor/attestable AMI to select and what the executor must provide — without describing any
+in-repo build-image to pin.
 
-#### Scenario: Image reference is documented as an immutable digest
+#### Scenario: Docs point operators at the upstream flavor and its attestable AMI
 
 - **WHEN** an operator looks for build configuration in the repository docs
-- **THEN** they find the exact container image reference to configure, expressed as an immutable digest (`...@sha256:<digest>`) rather than a floating tag
+- **THEN** they are directed to the upstream `rust-build` flavor (`github-runner-ec2-attestation/flavors/rust-build/`) and its per-flavor, PCR4-bound attestable AMI as the source of the execution image, and the docs do NOT instruct them to pin an in-repo `build-image@sha256:<digest>` reference
 
 #### Scenario: Minimum scratch size is documented with its basis
 
@@ -200,4 +174,4 @@ the executor must provide.
 #### Scenario: Docs make clear no security changes are needed
 
 - **WHEN** the operator follows the documentation
-- **THEN** it is clear that compatibility comes from the image and build script alone, and they can run a successful build without changing any executor security setting other than the already-assumed network egress
+- **THEN** it is clear that compatibility comes from the flavor's image and this repo's build script alone, and they can run a successful build without changing any executor security setting other than the already-assumed network egress
