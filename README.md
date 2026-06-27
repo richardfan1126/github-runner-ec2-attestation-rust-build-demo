@@ -59,9 +59,12 @@ selection and AMI provisioning instructions.
 > config. That model no longer applies — select the `rust-build` flavor AMI from the upstream
 > pipeline instead.
 
-### Minimum writable scratch-mount size
+### Writable scratch mount (provided by the flavor)
 
-Configure the executor's writable tmpfs scratch mount to **≥ 4 GiB**. This floor covers:
+The `rust-build` flavor provisions the executor's single writable tmpfs scratch mount at
+**2 GiB** with exec enabled (`CONTAINER_TMPFS_SIZE=2g`, `CONTAINER_TMPFS_EXEC=true` in
+`flavors/rust-build/env`). Operators do not size this themselves — it is baked into the
+PCR4-bound AMI by the upstream pipeline. The 2 GiB tmpfs covers:
 
 - Rust toolchain writable home/caches (`CARGO_HOME` — index, lock, metadata)
 - Release build artifacts (`CARGO_TARGET_DIR/release/` — compiled objects + final binary)
@@ -69,27 +72,30 @@ Configure the executor's writable tmpfs scratch mount to **≥ 4 GiB**. This flo
 - oras authentication and push scratch
 - Headroom for filesystem overhead
 
-Actual peak scratch for `attested-hello` (zero crate dependencies) is expected to be well under 4 GiB;
-this floor stays conservative until measured. To validate or lower it, run `quickstart.md` Scenario D,
-which reports `PEAK_SCRATCH_MB` for a real release build.
+Exec must be enabled on the scratch tmpfs because the release build runs compiled output
+(build scripts and the final `attested-hello` binary) from `CARGO_TARGET_DIR`. Measured peak
+scratch for `attested-hello` (zero crate dependencies) is well under 2 GiB.
 
-### No executor security changes required
+### No operator security changes required
 
-Change **nothing** in the executor's security configuration. Compatibility comes from the upstream
-`rust-build` flavor's image and this repo's build script alone — both run under the executor's
-hardened defaults without modification:
+Operators change **nothing** in the executor's security configuration: selecting the `rust-build`
+flavor AMI is the whole setup. Compatibility comes from the upstream `rust-build` flavor and this
+repo's build script. The flavor carries two deliberate, build-required relaxations from the hardened
+executor defaults — both baked into the PCR4-bound AMI and recorded in the upstream `flavors.lock`
+`relaxations` field, so they are visible to a verifier without reading the env file:
 
-| Setting | Executor default | Required change |
+| Setting | Hardened executor default | rust-build flavor |
 |---|---|---|
-| User | `65534:65534` | None |
-| Root filesystem | Read-only | None |
-| Workspace mount | Read-only | None |
-| Linux capabilities | Default set (no extras) | None |
-| `no-new-privileges` | Enabled | None |
-| Network egress | Permitted | None (required for GHCR push) |
+| User | `65534:65534` | unchanged |
+| Root filesystem | read-only | unchanged |
+| Workspace mount | read-only | unchanged |
+| Linux capabilities | default set (no extras) | unchanged |
+| `no-new-privileges` | enabled | unchanged |
+| Writable tmpfs scratch | `256m`, `noexec` | `2g`, `exec` — **relaxed** (compile + run from scratch) |
+| Network mode | `none` (no egress) | `bridge` — **relaxed** (outbound egress for the final `oras push` to GHCR) |
 
-The only pre-existing executor permission this build relies on is **outbound network egress** for the
-final `oras push` to GHCR. All other security settings remain at their hardened defaults.
+No other security setting deviates from its hardened default, and the operator makes none of these
+changes by hand — they ship inside the flavor's attestable AMI.
 
 ---
 

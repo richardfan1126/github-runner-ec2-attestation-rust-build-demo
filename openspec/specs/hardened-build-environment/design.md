@@ -105,31 +105,35 @@ download entirely — not guard them behind `if missing`. A conditional install 
 still a forbidden privileged fallback under hardened defaults, so the code paths
 must not exist.
 
-### Image-publish CI surfaces the immutable digest (R8)
+### Execution image comes from the upstream rust-build flavor (R8)
 
-`.github/workflows/build-image.yml` builds the Dockerfile for `linux/amd64` via
-`docker/build-push-action`, pushes to this repo's GHCR namespace, and writes the
-`...@sha256:<digest>` reference to the step summary using the action's typed
-`digest` output (more reliable than parsing CLI output). No attestation of the
-image itself.
+This repository no longer builds or publishes an execution-container image; the
+`build-image.yml` workflow and the in-repo `Dockerfile` were retired. The image is the
+upstream `rust-build` flavor (`github-runner-ec2-attestation/flavors/rust-build/`), baked
+offline into a per-flavor, PCR4-bound attestable AMI by the upstream pipeline. The image
+digest is recorded in the upstream `flavors.lock` and bound by PCR4 — nothing is pulled
+from a registry at executor runtime, and there is no in-repo digest for operators to pin.
 
-### Conservative ≥4 GiB scratch floor, with a measurement path (R9)
+### Flavor-provisioned 2 GiB exec-enabled scratch (R9)
 
-Document a conservative ≥4 GiB writable-scratch floor with its basis (toolchain
-caches + downloads + release `target/` + headroom), noting it may be measured down.
-Actual peak usage for a zero-dependency build is expected well under the floor, but
-4 GiB stays the documented operator requirement until measured.
+The `rust-build` flavor provisions the writable tmpfs scratch at 2 GiB with exec
+enabled (`CONTAINER_TMPFS_SIZE=2g`, `CONTAINER_TMPFS_EXEC=true`), baked into the
+PCR4-bound AMI rather than sized by the operator. Basis: toolchain caches + downloads
++ release `target/` + headroom; measured peak for the zero-dependency build is well
+under 2 GiB. Exec is required because the release build runs compiled output (build
+scripts and the final binary) from `CARGO_TARGET_DIR` on the scratch mount.
 
 ## Risks / Trade-offs
 
 - **Pinned literals drift.** Digests/versions/checksums are point-in-time and must
   be re-captured if upstream re-publishes a tag; the captured values live in the
   Dockerfile so they fail loudly (`sha256sum -c`) rather than silently drifting.
-- **Conservative scratch floor over-provisions.** 4 GiB is deliberately generous
-  for a zero-dependency build; accepted to avoid under-provisioning operators,
-  with a documented path to tighten it with data.
-- **Network egress remains required** for the final GHCR push; removing it is
-  explicitly out of scope. A blocked-egress run fails clearly rather than silently.
+- **Scratch is sized for the zero-dependency build.** 2 GiB is generous for
+  `attested-hello`; a build that adds heavy crate dependencies may need the flavor's
+  `CONTAINER_TMPFS_SIZE` raised upstream.
+- **The flavor relaxes two hardened defaults.** Network mode (`none`→`bridge`) for the
+  final GHCR push and the scratch tmpfs (`noexec`→`exec`) are deliberate, build-required
+  relaxations recorded in `flavors.lock`; a blocked-egress run fails clearly rather than silently.
 - **Direct-binary invocation couples to the rustup layout.** Bypassing the proxy
   shims hard-codes the `toolchains/<channel>.../bin` path (overridable via
   `RUST_TOOLCHAIN_BIN`); a rustup layout change would require updating it.

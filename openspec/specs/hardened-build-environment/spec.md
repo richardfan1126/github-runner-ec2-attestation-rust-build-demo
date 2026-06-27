@@ -166,12 +166,12 @@ in-repo build-image to pin.
 - **WHEN** an operator looks for build configuration in the repository docs
 - **THEN** they are directed to the upstream `rust-build` flavor (`github-runner-ec2-attestation/flavors/rust-build/`) and its per-flavor, PCR4-bound attestable AMI as the source of the execution image, and the docs do NOT instruct them to pin an in-repo `build-image@sha256:<digest>` reference
 
-#### Scenario: Minimum scratch size is documented with its basis
+#### Scenario: Scratch mount size is documented with its basis
 
-- **WHEN** an operator provisions the executor's writable scratch mount
-- **THEN** the docs state a conservative minimum floor of at least 4 GiB sufficient for a Rust release build, explain the basis (toolchain writable home(s), downloaded artifacts, and the release `target/` directory with headroom), and note it may be validated/lowered by measuring actual peak usage
+- **WHEN** an operator reads how the executor's writable scratch mount is sized
+- **THEN** the docs state that the `rust-build` flavor provisions a 2 GiB exec-enabled tmpfs scratch mount (`CONTAINER_TMPFS_SIZE=2g`, `CONTAINER_TMPFS_EXEC=true`) baked into the PCR4-bound AMI rather than sized by the operator, and explain the basis (toolchain writable home(s), downloaded artifacts, and the release `target/` directory with headroom)
 
-#### Scenario: Docs make clear no security changes are needed
+#### Scenario: Docs make clear no operator security changes are needed
 
 - **WHEN** the operator follows the documentation
-- **THEN** it is clear that compatibility comes from the flavor's image and this repo's build script alone, and they can run a successful build without changing any executor security setting other than the already-assumed network egress
+- **THEN** it is clear that selecting the `rust-build` flavor AMI is the whole setup, that the flavor carries the build's required relaxations from the hardened executor defaults (network mode `none`→`bridge` for the GHCR push and the writable tmpfs scratch `noexec`→`exec` at 2 GiB, recorded in `flavors.lock`), and that the operator changes no executor security setting themselves
