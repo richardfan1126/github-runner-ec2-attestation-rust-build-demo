@@ -1,23 +1,17 @@
 """Static (text-inspection) tests for the hardened build image and script.
 
-Feature: 001-hardened-executor-build (Hardened-Executor-Compatible Attested
-Build).
+Capability: hardened-build-environment (see ``openspec/specs/``).
 
 This module statically inspects the *text* of two checked-in artifacts —
 the repo-root ``Dockerfile`` and ``scripts/build-rust.sh`` — to assert the
 supply-chain and runtime-hardening invariants. It deliberately performs no
-Docker/container work: container behavior is validated by the manual
-``specs/001-hardened-executor-build/quickstart.md``. The style mirrors
+Docker/container work: container behavior is validated manually per the
+operator guidance in ``README.md``. The style mirrors
 ``tests/test_security_hardening.py`` (path + text inspection).
 
-This file is the shared scaffolding (T002, Phase 2 — Foundational). It
-provides the lazy loaders and fixtures that the per-story assertion tasks
-extend:
-
-* US1 (T003) — assertions over ``scripts/build-rust.sh`` text.
-* US2 (T008) — assertions over ``Dockerfile`` text.
-
-No assertions live here yet — only the loaders/fixtures.
+This file is the shared scaffolding. It provides the lazy loaders and
+fixtures that the per-requirement assertion tests extend (assertions over
+``scripts/build-rust.sh`` and ``Dockerfile`` text).
 """
 
 from __future__ import annotations

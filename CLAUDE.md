@@ -1,7 +1,12 @@
-<!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan:
-`specs/001-hardened-executor-build/plan.md` (Hardened-Executor-Compatible
-Attested Build). Related design artifacts live alongside it: `research.md`,
-`data-model.md`, `quickstart.md`, and `contracts/`.
-<!-- SPECKIT END -->
+For project context — capabilities, requirements, and design rationale — see the
+OpenSpec specs under `openspec/specs/`:
+
+- `hardened-build-environment/` — the Rust project, the pinned build image, and
+  the build script that runs under the Remote Executor's hardened defaults.
+- `attested-build-workflow/` — the GitHub Actions orchestration (dispatch →
+  remote attested build → integrity verify → sign → publish → attest → cleanup).
+- `attested-executor-caller/` — the attested-channel client and its verification
+  logic.
+
+Each capability has a `spec.md` (requirements as `Requirement`/`Scenario` blocks)
+and a `design.md` (decisions, alternatives, and trade-offs).
