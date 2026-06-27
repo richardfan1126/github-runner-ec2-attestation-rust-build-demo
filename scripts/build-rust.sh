@@ -5,8 +5,9 @@
 # Runs under the executor's hardened defaults: rootless (uid:gid 65534:65534),
 # read-only root filesystem, read-only /workspace, no-new-privileges. The Rust
 # toolchain (cargo/rustc), the C compiler/linker (cc), curl, and the oras CLI
-# are ALL pre-installed in the build image at pinned versions — this script
-# performs NO run-time package installs and NO toolchain download. It compiles
+# are ALL pre-installed by the upstream rust-build flavor image at pinned versions
+# (github-runner-ec2-attestation/flavors/rust-build/) — this script performs NO
+# run-time package installs and NO toolchain download. It compiles
 # the attested-hello binary, computes its SHA-256 digest, uploads it to GHCR as
 # a temporary OCI package via oras, and prints stdout markers consumed by the
 # workflow.
@@ -64,13 +65,17 @@ export CARGO_TARGET_DIR="${SCRATCH_DIR}/target"
 
 BINARY_PATH="${CARGO_TARGET_DIR}/release/${BINARY_NAME}"
 
-# RUSTUP_HOME is the read-only toolchain home baked into the image — set, never
-# written (research R1). Default matches the Dockerfile's ENV RUSTUP_HOME.
+# Toolchain contract: these defaults are the contract provided by the upstream
+# rust-build flavor (github-runner-ec2-attestation/flavors/rust-build/).
+# The flavor's image pre-installs cargo, rustc, cc, curl, and oras on the runtime
+# PATH for 65534:65534, with RUSTUP_HOME=/opt/rust (read-only, never written —
+# real binaries are invoked directly, not via rustup proxy shims) and the toolchain
+# binaries at /opt/rust/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin.
+# A divergence in the upstream flavor from these values breaks this script.
 export RUSTUP_HOME="${RUSTUP_HOME:-/opt/rust}"
 
-# Prepend the real toolchain bin (real cargo/rustc, NOT the rustup proxy shims)
-# and the oras install dir to PATH. Both are baked into the image; the defaults
-# match the Dockerfile and may be overridden if the image layout changes.
+# The real toolchain bin dir and oras install dir are baked into the upstream
+# rust-build flavor image; defaults below must stay byte-identical to that flavor.
 RUST_TOOLCHAIN_BIN="${RUST_TOOLCHAIN_BIN:-/opt/rust/toolchains/1.96.0-x86_64-unknown-linux-gnu/bin}"
 export PATH="${RUST_TOOLCHAIN_BIN}:/usr/local/bin:${PATH}"
 

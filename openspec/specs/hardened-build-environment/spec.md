@@ -2,13 +2,17 @@
 
 ## Purpose
 
-Define the Rust project, the purpose-built container build image, and the build
-script that compiles the `attested-hello` binary and transfers it to GHCR — all
-running unmodified under the Remote Executor's hardened, default container-security
-posture (rootless `65534:65534`, read-only root filesystem, read-only workspace,
-no privilege escalation, default capabilities, a single writable tmpfs scratch
-mount, with outbound network egress as the only assumed exception). It also
-defines the operator documentation needed to point the executor at this image.
+Define the Rust project and the build script that compile the `attested-hello`
+binary and transfer it to GHCR — both running unmodified under the Remote
+Executor's hardened, default container-security posture (rootless `65534:65534`,
+read-only root filesystem, read-only workspace, no privilege escalation, default
+capabilities, a single writable tmpfs scratch mount, with outbound network egress
+as the only assumed exception). The build environment (execution container image)
+is provided by the upstream `rust-build` flavor
+(`github-runner-ec2-attestation/flavors/rust-build/`), baked into a per-flavor
+PCR4-bound attestable AMI. This capability documents the toolchain contract the
+build script depends on and the operator documentation needed to select and run
+the upstream flavor.
 
 This capability covers everything that runs *inside* the execution container. The
 GitHub Actions orchestration around it is specified in
