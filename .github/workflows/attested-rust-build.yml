@@ -246,10 +246,12 @@ jobs:
       # ------------------------------------------------------------------
       - name: Verify binary integrity
         shell: bash
+        env:
+          BINARY_SHA256: ${{ steps.parse_markers.outputs.binary_sha256 }}
         run: |
           set -euo pipefail
 
-          EXPECTED_SHA256="${{ steps.parse_markers.outputs.binary_sha256 }}"
+          EXPECTED_SHA256="$BINARY_SHA256"
           BINARY_PATH="downloaded-binary/attested-hello"
 
           if [ ! -f "$BINARY_PATH" ]; then
