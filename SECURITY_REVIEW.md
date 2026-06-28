@@ -17,28 +17,34 @@ reviewed separately in the `github-runner-ec2-attestation` repository's
 
 ## Findings
 
-### 1. High: GitHub Actions expression injection via `workflow_dispatch` inputs
+### 1. ~~High: GitHub Actions expression injection via `workflow_dispatch` inputs~~ — MITIGATED
 
-- `.github/workflows/attested-rust-build.yml` interpolates untrusted `${{ inputs.* }}`
+- **Mitigation applied (2026-06-28):** all `${{ inputs.* }}` expressions and
+  `${{ steps.parse_markers.outputs.binary_oci_ref }}` have been moved out of `run:`
+  bodies into step `env:` blocks; values are referenced as quoted `"$VAR"` shell
+  variables. The inline `python3 -c` in step 11 now reads all values from
+  `os.environ` (no expression interpolated into source text). `BINARY_OCI_REF` is
+  validated against `ghcr.io/<owner>/<repo>/tmp-build:<tag>` before any downstream
+  step uses it. The allowlist bypass is closed: step 7 now reads `SERVER_URL` from
+  `env:` rather than re-interpolating `${{ inputs.server_url }}`.
+- **Remaining coverage gap:** no automated lint check (e.g. `actionlint` in CI)
+  asserts that no `${{ inputs.* }}` expression appears in a `run:` body. Adding such
+  a check is a recommended follow-up to prevent silent regression.
+- ~~`.github/workflows/attested-rust-build.yml` interpolates untrusted `${{ inputs.* }}`
   directly into `run:` shell bodies in step 7 (Run Remote Executor Caller), step 11
   (Create provenance manifest), and step 13 (Push OCI artifact): `inputs.server_url`,
   `inputs.script_path`, `inputs.commit_hash`, `inputs.repository_url`, and
-  `inputs.audience`.
-- Step 11 additionally embeds `${REPO_URL}` / `${COMMIT_HASH}` (derived from those
-  inputs) into a `python3 -c "..."` string, adding a second (Python) injection surface.
-- An actor able to dispatch the workflow can inject arbitrary commands on the runner,
+  `inputs.audience`.~~
+- ~~Step 11 additionally embeds `${REPO_URL}` / `${COMMIT_HASH}` (derived from those
+  inputs) into a `python3 -c "..."` string, adding a second (Python) injection surface.~~
+- ~~An actor able to dispatch the workflow can inject arbitrary commands on the runner,
   which holds `secrets.GITHUB_TOKEN` with `packages: write`, `attestations: write`, and
-  `id-token: write`.
-- The server-URL allowlist enforced in step 1 is bypassed: step 1 validates an `env`
-  copy, but step 7 re-interpolates the raw `${{ inputs.server_url }}`.
-- `${{ steps.parse_markers.outputs.binary_oci_ref }}` (matched as `.+` from attested
+  `id-token: write`.~~
+- ~~The server-URL allowlist enforced in step 1 is bypassed: step 1 validates an `env`
+  copy, but step 7 re-interpolates the raw `${{ inputs.server_url }}`.~~
+- ~~`${{ steps.parse_markers.outputs.binary_oci_ref }}` (matched as `.+` from attested
   build stdout) is interpolated into `oras pull` in step 9 without a registry-reference
-  format check.
-- Required hardening: pass every input through `env:` and reference quoted `"$VAR"` in
-  the script (as step 1 already does correctly); never interpolate `${{ inputs.* }}`
-  inside a `run:` body; validate `binary_oci_ref` against a strict grammar before use.
-- Impact: a workflow-dispatch actor can execute code on the runner and abuse the
-  workflow's write-scoped `GITHUB_TOKEN`, defeating the step-1 allowlist control.
+  format check.~~
 
 ### 2. Medium: Caller attestation primitives fail open on empty policy inputs
 
@@ -93,9 +99,13 @@ reviewed separately in the `github-runner-ec2-attestation` repository's
 
 ## Coverage gaps
 
-- No test asserts the workflow avoids `${{ inputs.* }}` interpolation in `run:` bodies
-  (finding 1).
+- ~~No test asserts the workflow avoids `${{ inputs.* }}` interpolation in `run:` bodies
+  (finding 1).~~ — Mitigated by moving all values to `env:` blocks (2026-06-28).
+  Follow-up: add a CI lint step (e.g. `actionlint`) that fails on bare
+  `${{ inputs.* }}` or `${{ steps.*.outputs.* }}` inside `run:` bodies.
 - No test asserts the caller's `verify_certificate_chain` / `verify_cose_signature` /
   `validate_pcrs` fail closed when policy inputs are empty (finding 2).
-- No test asserts `binary_oci_ref` is validated against a registry-reference grammar
-  before use in `oras pull`.
+- ~~No test asserts `binary_oci_ref` is validated against a registry-reference grammar
+  before use in `oras pull`.~~ — Mitigated: Step 8 now validates `BINARY_OCI_REF`
+  against `ghcr.io/<owner>/<repo>/tmp-build:<tag>` before writing it to
+  `$GITHUB_OUTPUT` (2026-06-28).

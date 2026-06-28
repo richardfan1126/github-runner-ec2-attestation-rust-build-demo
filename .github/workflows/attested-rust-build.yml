@@ -162,22 +162,28 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SERVER_URL: ${{ inputs.server_url }}
+          SCRIPT_PATH: ${{ inputs.script_path || 'scripts/build-rust.sh' }}
+          COMMIT_HASH: ${{ inputs.commit_hash || github.sha }}
+          REPOSITORY_URL: ${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}
+          AUDIENCE: ${{ inputs.audience }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
 
           python .github/scripts/call_remote_executor \
-            --server-url "${{ inputs.server_url }}" \
-            --script-path "${{ inputs.script_path || 'scripts/build-rust.sh' }}" \
-            --commit-hash "${{ inputs.commit_hash || github.sha }}" \
-            --repository-url "${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}" \
+            --server-url "$SERVER_URL" \
+            --script-path "$SCRIPT_PATH" \
+            --commit-hash "$COMMIT_HASH" \
+            --repository-url "$REPOSITORY_URL" \
             --github-token "$GITHUB_TOKEN" \
             --root-cert-pem "$ROOT_CERT_PEM" \
             --expected-pcrs "$EXPECTED_PCRS" \
-            --audience "${{ inputs.audience }}" \
+            --audience "$AUDIENCE" \
             --attestation-output-dir attestation-documents \
             --script-env "GITHUB_TOKEN=$GITHUB_TOKEN" \
-            --script-env "GITHUB_REPOSITORY=${{ github.repository }}" \
-            --script-env "COMMIT_SHA=${{ inputs.commit_hash || github.sha }}" \
+            --script-env "GITHUB_REPOSITORY=$GITHUB_REPOSITORY" \
+            --script-env "COMMIT_SHA=$COMMIT_HASH" \
             2>&1 | tee execution-output.txt
 
       # ------------------------------------------------------------------
@@ -186,6 +192,9 @@ jobs:
       - name: Parse stdout markers
         id: parse_markers
         shell: bash
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
 
@@ -202,6 +211,16 @@ jobs:
             exit 1
           fi
 
+          # Validate BINARY_OCI_REF against the pinned grammar:
+          # ghcr.io/<REPO_OWNER>/<REPO_NAME>/tmp-build:<tag>
+          # Owner/repo are compared literally (not interpolated into a regex pattern).
+          EXPECTED_PREFIX="ghcr.io/${REPO_OWNER}/${REPO_NAME}/tmp-build:"
+          OCI_REF_TAG="${BINARY_OCI_REF#"${EXPECTED_PREFIX}"}"
+          if [ "$BINARY_OCI_REF" = "$OCI_REF_TAG" ] || ! [[ "$OCI_REF_TAG" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::BINARY_OCI_REF '${BINARY_OCI_REF}' does not match expected grammar ghcr.io/${REPO_OWNER}/${REPO_NAME}/tmp-build:<tag>"
+            exit 1
+          fi
+
           echo "binary_sha256=${BINARY_SHA256}" >> "$GITHUB_OUTPUT"
           echo "binary_oci_ref=${BINARY_OCI_REF}" >> "$GITHUB_OUTPUT"
           echo "Found BINARY_SHA256: ${BINARY_SHA256}"
@@ -212,10 +231,10 @@ jobs:
       # ------------------------------------------------------------------
       - name: Pull temporary binary from GHCR
         shell: bash
+        env:
+          BINARY_OCI_REF: ${{ steps.parse_markers.outputs.binary_oci_ref }}
         run: |
           set -euo pipefail
-
-          BINARY_OCI_REF="${{ steps.parse_markers.outputs.binary_oci_ref }}"
 
           echo "Pulling temporary binary from ${BINARY_OCI_REF}..."
           mkdir -p downloaded-binary
@@ -256,22 +275,24 @@ jobs:
       # ------------------------------------------------------------------
       - name: Create provenance manifest
         shell: bash
+        env:
+          BINARY_SHA256: ${{ steps.parse_markers.outputs.binary_sha256 }}
+          REPO_URL: ${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}
+          COMMIT_HASH: ${{ inputs.commit_hash || github.sha }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
 
-          COMMIT_HASH="${{ inputs.commit_hash || github.sha }}"
-          REPO_URL="${{ inputs.repository_url || format('https://github.com/{0}', github.repository) }}"
-
           python3 -c "
-          import json, datetime
+          import os, json, datetime
           from scripts.create_provenance import create_provenance_manifest
 
           manifest = create_provenance_manifest(
               binary_name='attested-hello',
-              sha256='${{ steps.parse_markers.outputs.binary_sha256 }}',
-              repo_url='${REPO_URL}',
-              commit_hash='${COMMIT_HASH}',
-              run_id='${{ github.run_id }}',
+              sha256=os.environ['BINARY_SHA256'],
+              repo_url=os.environ['REPO_URL'],
+              commit_hash=os.environ['COMMIT_HASH'],
+              run_id=os.environ['RUN_ID'],
               timestamp=datetime.datetime.utcnow().isoformat() + 'Z',
           )
 
@@ -297,12 +318,15 @@ jobs:
       - name: Push OCI artifact to GHCR
         id: oras_push
         shell: bash
+        env:
+          COMMIT_HASH: ${{ inputs.commit_hash || github.sha }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
 
-          COMMIT_HASH="${{ inputs.commit_hash || github.sha }}"
           SHORT_SHA="${COMMIT_HASH:0:7}"
-          OCI_IMAGE="ghcr.io/${{ github.repository_owner }}/${{ github.event.repository.name }}/attested-hello"
+          OCI_IMAGE="ghcr.io/${REPO_OWNER}/${REPO_NAME}/attested-hello"
           OCI_REF="${OCI_IMAGE}:${SHORT_SHA}"
 
           echo "Pushing OCI artifact to ${OCI_REF}..."
@@ -362,12 +386,13 @@ jobs:
       # ------------------------------------------------------------------
       - name: Print job summary
         shell: bash
+        env:
+          OCI_REF: ${{ steps.oras_push.outputs.oci_ref }}
+          MANIFEST_DIGEST: ${{ steps.oras_push.outputs.manifest_digest }}
+          ATTEST_OUTCOME: ${{ steps.attest.outcome }}
+          BINARY_SHA256: ${{ steps.parse_markers.outputs.binary_sha256 }}
         run: |
           set -euo pipefail
-
-          OCI_REF="${{ steps.oras_push.outputs.oci_ref }}"
-          MANIFEST_DIGEST="${{ steps.oras_push.outputs.manifest_digest }}"
-          ATTEST_OUTCOME="${{ steps.attest.outcome }}"
 
           if [ "$ATTEST_OUTCOME" = "success" ]; then
             ATTEST_STATUS="✅ Created"
@@ -382,7 +407,7 @@ jobs:
           echo "| **OCI Reference** | \`${OCI_REF}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Manifest Digest** | \`${MANIFEST_DIGEST}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **GitHub Attestation** | ${ATTEST_STATUS} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Binary SHA-256** | \`${{ steps.parse_markers.outputs.binary_sha256 }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Binary SHA-256** | \`${BINARY_SHA256}\` |" >> "$GITHUB_STEP_SUMMARY"
 
       # ------------------------------------------------------------------
       # Step 17: Get temporary package version ID
@@ -394,10 +419,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BINARY_OCI_REF: ${{ steps.parse_markers.outputs.binary_oci_ref }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-
-          BINARY_OCI_REF="${{ steps.parse_markers.outputs.binary_oci_ref }}"
 
           if [ -z "$BINARY_OCI_REF" ]; then
             echo "No BINARY_OCI_REF available, skipping cleanup."
@@ -421,8 +446,8 @@ jobs:
 
           # Try user endpoint first (most common for personal repos), fall back to org endpoint
           VERSION_ID=""
-          for ENDPOINT in "/users/${{ github.repository_owner }}/packages/container/${ENCODED_PACKAGE_NAME}/versions" \
-                          "/orgs/${{ github.repository_owner }}/packages/container/${ENCODED_PACKAGE_NAME}/versions"; do
+          for ENDPOINT in "/users/${REPO_OWNER}/packages/container/${ENCODED_PACKAGE_NAME}/versions" \
+                          "/orgs/${REPO_OWNER}/packages/container/${ENCODED_PACKAGE_NAME}/versions"; do
             echo "Trying endpoint: ${ENDPOINT}"
             RESPONSE=$(gh api "$ENDPOINT" 2>/dev/null) || continue
             # Check if response is a JSON array (not an error object)
