@@ -1,0 +1,251 @@
+## Context
+
+The Remote Executor server has already shipped a BREAKING attestation wire-format
+change (`attestation-claims-digest`). The claim fields that used to sit inline in the
+NitroTPM attestation's `user_data` now live in a base64 opaque blob `claims_raw`
+carried alongside the attestation in the response body, bound by a digest inside a
+compact signed envelope. This change updates **the caller/verifier in this repo**
+(`.github/scripts/call_remote_executor/`) to consume that format. See `proposal.md`
+for motivation and the incompatibility inventory.
+
+Concrete wire facts this design targets (verified against the server source):
+
+- Envelope in `user_data`: `{ v, claims_digest, timestamp, execution_id }`, with
+  `ENVELOPE_VERSION = 1`.
+- Claims document (`claims_raw`) top-level `schema_version = "1.0"` (`MAJOR.MINOR`).
+- Digests are `sha256:<hex>` — `claims_digest` over the decoded `claims_raw` bytes,
+  and the inner `output_digest` over canonical JSON `{ stdout, stderr, exit_code }`.
+- `/execute` and `/execution/{id}/output` responses carry `claims_raw`; **`/attest`
+  does not** — its response is `{ attestation_document, server_public_key }` and the
+  key fingerprint is read from the attestation's native `public_key` field.
+
+The three call sites of the shared verifier today:
+
+```
+  caller.py:340  /attest   → validate_attestation(att)   → reads payload["public_key"]   (NO claims_raw)
+  caller.py:510  /execute  → validate_attestation(att)   → reads user_data + binds fields (HAS claims_raw)
+  caller.py:759  /output   → validate_output_attestation(att, stdout, stderr, exit_code) (HAS claims_raw)
+```
+
+## Goals / Non-Goals
+
+**Goals:**
+- Consume the claims-digest format: verify the integrity binding of `claims_raw`
+  against the signed `claims_digest` before reading any claim field, and read the
+  request-binding fields from the verified claims document.
+- Preserve every security guarantee the caller has today, and *harden* the two
+  checks (`script_env_hash`, `execution_id`) that are currently silently skippable.
+- Keep the verifier forward-compatible: additive server claims (MINOR) must not force
+  another coordinated caller update.
+- Do not break the `/attest` server-identity path, which shares the verifier but
+  carries no claims.
+
+**Non-Goals:**
+- No dual-format support. This is a clean cutover coordinated with the already-shipped
+  server change, gated on `schema_version`.
+- No change to the attested-channel handshake, HPKE encryption, PCR/nonce/cert-chain
+  verification, OIDC flow, or the `attested-build-workflow` orchestration.
+- No consumption of the new `gpu` block beyond tolerating it (ignore-unknown-fields).
+- Not fixing the pre-existing ~80-line duplication between the two verifier functions
+  (see Risks) — only ensuring the *new* logic is not duplicated.
+
+## Decisions
+
+### D1 — Two binding layers, in two different places
+
+Verification splits into two checks that answer different questions with different
+inputs, and each defeats an adversary the other structurally cannot see:
+
+```
+  INTEGRITY binding   "has claims_raw been tampered with?"    catches a WIRE TAMPERER
+    inputs: (attestation, claims_raw)     ── no caller state ──   lives in attestation.py
+    claims_digest (from signed user_data)  ==  sha256(decode(claims_raw))
+
+  REQUEST binding     "did the server run MY request?"         catches a LYING SERVER
+    inputs: (trusted claims, what-I-sent) ── caller state  ──   lives in caller.py
+    attested repository_url/commit_hash/script_path/script_env_hash == sent/recomputed
+```
+
+Integrity passing means the claims are *authentic* (exactly what the TPM signed), not
+that their content is *honest*. A malicious server can author a perfectly-signed,
+untampered claims doc naming `evil/repo`; integrity passes, and only the request
+binding — which needs caller state `attestation.py` must not hold — rejects it.
+
+**Alternative rejected:** a single combined check. It would force `attestation.py` to
+know caller state, coupling the tamper-evidence layer to request specifics and making
+the `/attest` path (no request to bind) awkward.
+
+### D2 — Integrity binding lives with signature verification, strictly downstream of it
+
+The integrity binding is the same category of check as the COSE signature / PKI / PCR
+/ nonce verification: authenticity, no caller state. It therefore lives in
+`attestation.py`. It MUST run **after** signature verification — `claims_digest` is
+only trustworthy once `user_data` is proven signed:
+
+```
+  1. COSE verify (sig / PKI / PCR / nonce)        ← establishes user_data authentic
+  2. read claims_digest from the trusted envelope
+  3. decode claims_raw → sha256 → compare          ← transitively trusts claims_raw
+  4. version gate (D5)
+  5. parse claims → return   (only now may caller.py read + request-bind)
+```
+
+Binding before step 1 compares against an unsigned digest — worthless. This ordering
+is a hard constraint, not a convenience.
+
+### D3 — Phase-specific validators; `/attest` carve-out; shared helpers
+
+`validate_attestation` is shared by `/attest` (no claims) and `/execute` (has claims).
+Baking a mandatory integrity binding into it would fail-closed on `/attest` and break
+server-identity attestation. So the verifier surface becomes three phase-specific
+functions over shared internals:
+
+```
+  validate_attestation(att_b64, …)                              → payload_doc
+      pure COSE verify. Used by /attest. UNCHANGED, no claims binding.
+
+  validate_execution_attestation(att_b64, claims_raw, …)        → (payload_doc, claims)   ◀ NEW
+      COSE verify → integrity binding → version gate → return trusted claims. Used by /execute.
+
+  validate_output_attestation(att_b64, claims_raw, stdout, stderr, exit_code, …) → bool
+      COSE verify → integrity binding → output_digest recompute. Used by /output. (gains claims_raw)
+
+  shared internals:
+      _verify_cose(att_b64, …)             → payload_doc      (the currently-duplicated COSE steps)
+      _verify_claims_binding(payload, raw) → claims           (integrity + version gate; D5)
+```
+
+This matches the existing grain — `validate_output_attestation` is already a
+phase-specific all-in-one — and makes the binding **impossible to forget**: it is
+inside the only functions that return claims, never an optional argument a call site
+can omit. The caller extracts `claims_raw` from the decrypted response body (a sibling
+of `attestation_document`) and threads it in, keeping the verifier decoupled from the
+response schema.
+
+**Alternative rejected:** overload `validate_attestation` to always bind and return
+`(payload_doc, claims)`. This was the initial interface sketch; it breaks `/attest`,
+which has no `claims_raw`. Making `claims_raw` an *optional* parameter instead would
+reintroduce the silent-skip hazard (a call site that forgets it binds nothing).
+
+### D4 — Binding fields are mandatory within a known MAJOR; remove the None-guards
+
+Today `script_env_hash` and `execution_id` are guarded by `if attested is not None:`
+(a forward-compat hedge). Under the versioned format that hedge becomes a landmine —
+an absent field silently skips its check. Decision: within a `schema_version` MAJOR
+the caller accepts, every request-binding field is **mandatory**; an absent one is
+tampering and MUST fail closed. The None-guards are removed.
+
+This is **sound with zero false-reject surface**, and the proof is the version gate:
+
+```
+  How can a binding field legitimately disappear from the claims doc?
+    removed / renamed / re-typed / re-meaned  → MAJOR bump → caller rejects → never reads
+    additive optional field                   → MINOR bump → can only ADD, never remove
+  ∴ within a MAJOR the caller reads, every binding field is present.
+    absent there ⇒ not legitimate evolution ⇒ tampering ⇒ fail closed is safe.
+```
+
+Fail-closed is not a risk trade-off here; the version gate *earns* it. Without version
+awareness, silent-skip was the only safe choice — with the gate, silent-skip is the
+unsafe one.
+
+### D5 — Version gate: three explicit rejects, MINOR tolerance is free
+
+The gate rejects exactly three things and is otherwise permissive by construction:
+
+```
+  reject unknown envelope `v`            (≠ 1)          → cannot locate/trust the binding mechanism
+  reject unknown claims MAJOR            (schema ≠ "1") → cannot safely interpret fields
+  reject unknown digest algorithm prefix (≠ "sha256:") → cannot check the binding
+```
+
+Everything else is tolerated: a higher MINOR is accepted, and unknown claim fields are
+ignored — **with no new code**, because the caller only reads fields it knows and
+`dict.get()` ignores extra keys. So "tolerate MINOR / ignore unknown fields" needs no
+allow-list and no MINOR-comparison logic beyond "is the MAJOR one I know."
+
+**Alternative rejected:** strict reject-on-any-unknown-`schema_version`. That defeats
+the server design's growth goal (additive claims would force lockstep caller upgrades),
+and it is unnecessary because the integrity binding hashes transmitted bytes — adding a
+field never breaks the binding, only interpretation, and only for a consumer that
+chokes on unknown fields.
+
+### D6 — The request-binding set is "what can I independently produce?", and it is phase-dependent
+
+Membership of the request-binding set is generated by one test: *can the caller
+independently produce this value?* — either it sent it, or it can recompute it.
+
+```
+  execute phase  → bind { repository_url, commit_hash, script_path, script_env_hash }
+                   observe { security, gpu, … }         (ignore-unknown)
+  output phase   → bind { output_digest }               (recomputed from stdout/stderr/exit_code)
+                   observe { … }
+  both phases    → bind execution_id  — from the ENVELOPE, not claims
+```
+
+This correctly classifies `output_digest` as a *bind* field (never sent, but
+recomputable) which a naive "sent vs observed" framing would miss. Secrets
+(`github_token`, `oidc_token`) are correctly *never* in claims — their absence is
+required, not suspicious.
+
+### D7 — Output digest recomputed over canonical JSON; artifact digest matched
+
+`validate_output_attestation` recomputes `output_digest` over the canonical JSON object
+`{ stdout, stderr, exit_code }` (`json.dumps(sort_keys=True, separators=(',',':'))`,
+`exit_code` a JSON number, `sha256:`-prefixed), replacing the delimiter-glued
+`stdout:…\nstderr:…\nexit_code:…` string. The artifact-collector digest saved in
+`poll_output` (`caller.py` ~766) is updated to the identical canonical form so stored
+provenance matches what was verified. This mirrors the server's D11 and closes the same
+in-band-delimiter collision hazard on the verify side.
+
+## Risks / Trade-offs
+
+- **[Partial-migration silent regression on `script_env_hash`]** → A "make the errors
+  go away" migration fixes the loud fields (`repository_url`/`commit_hash`/`script_path`
+  raise) and leaves `script_env_hash` silently unverified (moved to `claims_raw` *and*
+  None-guarded); `execution_id` keeps working by luck (stayed in the envelope), masking
+  completion. → **Mitigation:** D4 removes the None-guard, and a required **strip-test**
+  (absent `script_env_hash` ⇒ reject) gives fail-closed its teeth — a tamper-test alone
+  cannot catch a surviving None-guard.
+- **[Overloading the shared verifier breaks `/attest`]** → Adding binding to
+  `validate_attestation` fails-closed on the claim-less server-identity path. →
+  **Mitigation:** D3 carve-out + a required regression test that an `/attest`
+  attestation with no `claims_raw` still validates and is not subjected to the binding.
+- **[BREAKING cutover]** → The caller will no longer parse the retired inline format;
+  it must talk to a server already emitting `schema_version` 1.x. → **Mitigation:**
+  coordinated cutover (the server side is already shipped), gated on `schema_version`;
+  rollback is a code revert on both sides.
+- **[Pre-existing ~80-line duplication between the two verifier functions]** → The COSE
+  size-check/decode/structural/cert/sig/PCR/nonce/logging steps are already copy-pasted,
+  a drift hazard. → **Mitigation (bounded):** not refactored by this change to keep
+  scope tight, but the *new* integrity-binding + version-gate logic ships as a single
+  shared helper (`_verify_claims_binding`) so it never duplicates. Consolidating the
+  older duplication is left as a follow-up.
+
+## Migration Plan
+
+1. Server side is already shipped (emits `v=1`, `schema_version="1.0"`, `claims_raw`).
+2. Land this caller change: new `validate_execution_attestation`, `claims_raw` on
+   `validate_output_attestation`, `_verify_claims_binding` helper, None-guards removed,
+   canonical output digest, `/attest` left on bare `validate_attestation`.
+3. Update `openspec/specs/attested-executor-caller/spec.md` deltas and the tests
+   (A: wrong hash rejected; B: absent hash rejected; C: `/attest` still validates).
+4. **Rollback:** revert the caller change; because the server is a separate deploy, a
+   rollback here simply returns to incompatibility — so coordinate the revert with the
+   server if the format is ever rolled back.
+
+## Open Questions
+
+- **Output-phase claims membership:** does the output `claims_raw` also carry the
+  execution claims (`repository_url`/`commit_hash`/`script_path`), or only
+  `output_digest` + `security`/`gpu`? D6 assumes output binds only `output_digest`
+  (+ `execution_id` from the envelope). Confirm against the server's output claims body
+  before finalizing the spec deltas; if execution claims are present at output time,
+  decide whether to re-bind them.
+- **Accepted MAJOR pinning:** the caller hard-accepts `schema_version` MAJOR `1` and
+  envelope `v` `1`. Confirm these are the values to pin at implementation time (they
+  match the current server source) and decide where the constants live so a future
+  MAJOR bump is a one-line, reviewed change.
+- **`gpu` block surfacing:** beyond tolerating it, should the caller log the `gpu`
+  claims or surface them in the job summary / attestation artifact? Out of scope for
+  this change, but worth a follow-up if attested GPU identity becomes consumer-visible.
