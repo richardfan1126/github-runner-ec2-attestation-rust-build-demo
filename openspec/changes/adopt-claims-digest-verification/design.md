@@ -105,14 +105,15 @@ functions over shared internals:
       pure COSE verify. Used by /attest. UNCHANGED, no claims binding.
 
   validate_execution_attestation(att_b64, claims_raw, …)        → (payload_doc, claims)   ◀ NEW
-      COSE verify → integrity binding → version gate → return trusted claims. Used by /execute.
+      validate_attestation(att) → integrity binding → version gate → presence check →
+      return trusted claims. Used by /execute. COMPOSES the existing bare verifier; adds no COSE code.
 
   validate_output_attestation(att_b64, claims_raw, stdout, stderr, exit_code, …) → bool
-      COSE verify → integrity binding → output_digest recompute. Used by /output. (gains claims_raw)
+      (its own inline COSE) → integrity binding → output_digest recompute. Used by /output. (gains claims_raw)
 
   shared internals:
-      _verify_cose(att_b64, …)             → payload_doc      (the currently-duplicated COSE steps)
       _verify_claims_binding(payload, raw) → claims           (integrity + version gate ONLY; D5)
+      (no _verify_cose extraction — see below)
 ```
 
 The shared `_verify_claims_binding` does the integrity binding and version gate and
@@ -121,6 +122,16 @@ present. Mandatory-field presence is *per-phase* (see D4) and therefore lives in
 phase-specific validator, not in the shared helper. Folding a "require these fields"
 check into the shared helper would false-reject one phase or the other, since the two
 phases carry disjoint field sets.
+
+Only **one** new shared helper is introduced (`_verify_claims_binding`); there is
+deliberately **no** `_verify_cose` extraction. `validate_execution_attestation` reuses
+the existing bare `validate_attestation` as its COSE seam (it already returns
+`payload_doc`), and `validate_output_attestation` keeps its own inline COSE steps. So
+the pre-existing ~80-line COSE duplication is left exactly as-is (a Non-Goal), this
+change adds **no** COSE code — only the binding — and there is no third copy of the
+COSE steps to maintain. An earlier sketch of a shared `_verify_cose` would have meant
+consolidating that duplication, contradicting the Non-Goal and widening scope; it is
+dropped in favour of composing the verifier that already exists.
 
 This matches the existing grain — `validate_output_attestation` is already a
 phase-specific all-in-one — and makes the binding **impossible to forget**: it is
@@ -256,6 +267,18 @@ in-band-delimiter collision hazard on the verify side.
   scope tight, but the *new* integrity-binding + version-gate logic ships as a single
   shared helper (`_verify_claims_binding`) so it never duplicates. Consolidating the
   older duplication is left as a follow-up.
+- **[Mirroring the server's conditional `claims_raw` reopens the gate — fail-OPEN
+  landmine]** → The server omits `claims_raw` from an `/execute` body only for
+  hand-built test doubles (`if attestation_doc.claims_raw is not None:`), with a comment
+  reading "None only … in some tests." A caller implementer could misread that as
+  "`claims_raw` is optional on `/execute`" and tolerate its absence — turning the
+  mandatory integrity gate back into a silent skip, so every stripped-preimage tamper (a
+  wire attacker simply deleting `claims_raw`) sails through wearing the test double's
+  costume. → **Mitigation:** the server's conditional is a server-internal serialization
+  detail, **not** caller-side optionality. On `/execute` (and `/output`) the caller
+  treats an absent `claims_raw` as reject — no questions asked, no test-double exception —
+  because it cannot distinguish a tamperer from a test double and must not try. The
+  `if claims_raw is not None` shape MUST NOT be mirrored on the caller.
 
 ## Migration Plan
 
@@ -285,10 +308,27 @@ in-band-delimiter collision hazard on the verify side.
   is therefore within reach for a *future* change to enforce a minimum-posture policy
   (e.g. reject unless `no_new_privileges` and `read_only_rootfs`). Out of scope here —
   flagged as a follow-up so the newly-available data is not forgotten.
-- **Accepted MAJOR pinning:** the caller hard-accepts `schema_version` MAJOR `1` and
-  envelope `v` `1`. Confirm these are the values to pin at implementation time (they
-  match the current server source) and decide where the constants live so a future
-  MAJOR bump is a one-line, reviewed change.
+- **~~Accepted MAJOR pinning~~ — RESOLVED (grounded in `attestation.py`'s existing
+  constant convention):** three values are pinned as module-level scalars in
+  `attestation.py` (co-located with the D5 gate `_verify_claims_binding` and matching the
+  existing `MAX_ATTESTATION_B64_SIZE` style; no new `constants.py`):
+
+  ```
+    ACCEPTED_ENVELOPE_VERSION    = 1          # server ENVELOPE_VERSION
+    ACCEPTED_CLAIMS_SCHEMA_MAJOR = 1          # server CLAIMS_SCHEMA_VERSION "1.0" → MAJOR
+    SHA256_DIGEST_PREFIX = "sha256:"          # claims_digest AND inner output_digest
+  ```
+
+  **Scalar, not a set/range** — deliberately: a `frozenset` would whisper "multiple
+  formats at once," contradicting the no-dual-format Non-Goal, whereas a scalar equality
+  check *structurally enforces* the single-format cutover. A future MAJOR bump is a
+  one-line reviewed change (`= 1` → `= 2`); a genuine transition window must consciously
+  widen the type, making that architectural shift visible in review rather than sneaking
+  in as a membership tweak. `SHA256_DIGEST_PREFIX` has three consumers — the
+  `claims_digest` integrity check, the `output_digest` recompute, and the write-side
+  canonical provenance form (`poll_output`/`artifact.py`, imported) — so stored ≡
+  verified. The pinning comment names the server constants it mirrors, keeping a
+  cross-repo MAJOR bump greppable on both sides.
 - **`gpu` block surfacing:** beyond tolerating it, should the caller log the `gpu`
   claims or surface them in the job summary / attestation artifact? Out of scope for
   this change, but worth a follow-up if attested GPU identity becomes consumer-visible.

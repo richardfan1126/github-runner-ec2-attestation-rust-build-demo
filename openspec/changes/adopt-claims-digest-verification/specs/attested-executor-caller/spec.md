@@ -24,10 +24,15 @@ with signature verification, strictly downstream of it.
 
 #### Scenario: Missing preimage or digest mismatch fails closed
 
-- **WHEN** `claims_raw` is absent from a response that requires it, or the recomputed
-  SHA-256 does not equal the signed `claims_digest`
+- **WHEN** `claims_raw` is absent from an `/execute` or final `/execution/{id}/output`
+  response, or the recomputed SHA-256 does not equal the signed `claims_digest`
 - **THEN** the caller reads no claim field and raises an error (no trusted-but-empty
   read), rather than proceeding with unbound or partially-read claims
+- **AND** it rejects an absent `claims_raw` regardless of any stated cause: the server
+  may omit `claims_raw` for its own internal test doubles, but the caller cannot
+  distinguish that from a wire attacker stripping the preimage, so absence is ALWAYS
+  rejected with no test-double exception — the server's conditional omission MUST NOT be
+  mirrored as caller-side optionality
 
 #### Scenario: Unknown envelope version, claims MAJOR, or digest algorithm is rejected
 
