@@ -107,6 +107,17 @@ class RemoteExecutorCaller:
             attestation_b64, self.root_cert_pem, self.expected_pcrs, expected_nonce
         )
 
+    def validate_execution_attestation(
+        self,
+        attestation_b64: str,
+        claims_raw: str | None,
+        expected_nonce: str | None = None,
+    ) -> tuple[dict, dict]:
+        """Validate the execution-acceptance attestation and its claims-digest binding."""
+        return attestation.validate_execution_attestation(
+            attestation_b64, claims_raw, self.root_cert_pem, self.expected_pcrs, expected_nonce
+        )
+
     def _verify_certificate_chain(self, cert_der: bytes, cabundle: list[bytes]) -> None:
         """Validate the signing certificate against the CA bundle and root certificate."""
         attestation.verify_certificate_chain(cert_der, cabundle, self.root_cert_pem)
@@ -126,19 +137,19 @@ class RemoteExecutorCaller:
     def validate_output_attestation(
         self,
         output_attestation_b64: str,
+        claims_raw: str | None,
         stdout: str,
         stderr: str,
         exit_code: int,
         expected_nonce: str | None = None,
     ) -> bool:
-        """Decode output attestation CBOR, extract user_data digest.
+        """Verify the claims-digest binding and recompute the canonical output_digest.
 
-        Compute SHA-256 of canonical output format. Compare digests.
         Returns True if match.
-        Raises CallerError on decode/parse failures or digest mismatch.
+        Raises CallerError on decode/parse/binding failures or digest mismatch.
         """
         return attestation.validate_output_attestation(
-            output_attestation_b64, stdout, stderr, exit_code,
+            output_attestation_b64, claims_raw, stdout, stderr, exit_code,
             self.root_cert_pem, self.expected_pcrs, expected_nonce
         )
 
@@ -507,81 +518,81 @@ class RemoteExecutorCaller:
                 details={"decrypted_keys": list(decrypted.keys())},
             )
 
-        payload_doc = self.validate_attestation(attestation_b64, expected_nonce=nonce)
+        # claims_raw rides alongside the attestation in the decrypted response body
+        # (design: the caller extracts it, keeping the verifier decoupled from the
+        # response schema). Integrity binding + version gate + execution-phase
+        # presence check all happen inside validate_execution_attestation.
+        claims_raw = decrypted.get("claims_raw")
+        payload_doc, claims = self.validate_execution_attestation(
+            attestation_b64, claims_raw, expected_nonce=nonce
+        )
 
-        # Request binding: verify attested fields match what we sent (Req 3.9)
-        user_data_raw = payload_doc.get("user_data")
-        if user_data_raw is not None:
-            if isinstance(user_data_raw, bytes):
-                user_data_str = user_data_raw.decode("utf-8")
-            else:
-                user_data_str = str(user_data_raw)
-            try:
-                attested = json.loads(user_data_str)
-            except (json.JSONDecodeError, ValueError) as exc:
+        # Request binding: verify attested fields match what we sent (Req 3.9).
+        # Read from the verified claims document, not raw user_data — every
+        # field here is guaranteed present by validate_execution_attestation
+        # (design D4: within an accepted MAJOR, absence is tampering, not a
+        # case to silently skip).
+        for field, sent_value in (
+            ("repository_url", repository_url),
+            ("commit_hash", commit_hash),
+            ("script_path", script_path),
+        ):
+            attested_value = claims.get(field)
+            if attested_value != sent_value:
                 raise CallerError(
-                    message=f"Failed to parse user_data from execution-acceptance attestation: {exc}",
+                    message=(
+                        f"Execution-acceptance attestation binding failed: "
+                        f"attested {field!r} ({attested_value!r}) does not match sent value ({sent_value!r})"
+                    ),
                     phase="execute",
-                    details={"user_data": user_data_str, "error": str(exc)},
+                    details={
+                        "field": field,
+                        "attested": attested_value,
+                        "sent": sent_value,
+                    },
                 )
-            for field in ("repository_url", "commit_hash", "script_path"):
-                sent_value = {
-                    "repository_url": repository_url,
-                    "commit_hash": commit_hash,
-                    "script_path": script_path,
-                }[field]
-                attested_value = attested.get(field)
-                if attested_value != sent_value:
-                    raise CallerError(
-                        message=(
-                            f"Execution-acceptance attestation binding failed: "
-                            f"attested {field!r} ({attested_value!r}) does not match sent value ({sent_value!r})"
-                        ),
-                        phase="execute",
-                        details={
-                            "field": field,
-                            "attested": attested_value,
-                            "sent": sent_value,
-                        },
-                    )
 
-            # Verify script_env_hash if present in attestation (Req 10.7, 10.8, 10.9)
-            attested_script_env_hash = attested.get("script_env_hash")
-            if attested_script_env_hash is not None:
-                expected_script_env_hash = self._compute_script_env_hash(script_env)
-                if attested_script_env_hash != expected_script_env_hash:
-                    raise CallerError(
-                        message=(
-                            f"Execution-acceptance attestation binding failed: "
-                            f"attested 'script_env_hash' ({attested_script_env_hash!r}) "
-                            f"does not match expected value ({expected_script_env_hash!r})"
-                        ),
-                        phase="execute",
-                        details={
-                            "field": "script_env_hash",
-                            "attested": attested_script_env_hash,
-                            "expected": expected_script_env_hash,
-                        },
-                    )
+        # Verify script_env_hash (Req 10.7, 10.8, 10.9) — mandatory, no None-guard
+        attested_script_env_hash = claims.get("script_env_hash")
+        expected_script_env_hash = self._compute_script_env_hash(script_env)
+        if attested_script_env_hash != expected_script_env_hash:
+            raise CallerError(
+                message=(
+                    f"Execution-acceptance attestation binding failed: "
+                    f"attested 'script_env_hash' ({attested_script_env_hash!r}) "
+                    f"does not match expected value ({expected_script_env_hash!r})"
+                ),
+                phase="execute",
+                details={
+                    "field": "script_env_hash",
+                    "attested": attested_script_env_hash,
+                    "expected": expected_script_env_hash,
+                },
+            )
 
-            # Verify execution_id if present in attestation (Req 10.10, 10.11)
-            attested_execution_id = attested.get("execution_id")
-            if attested_execution_id is not None:
-                response_execution_id = decrypted.get("execution_id")
-                if attested_execution_id != response_execution_id:
-                    raise CallerError(
-                        message=(
-                            f"Execution-acceptance attestation binding failed: "
-                            f"attested 'execution_id' ({attested_execution_id!r}) "
-                            f"does not match response body 'execution_id' ({response_execution_id!r})"
-                        ),
-                        phase="execute",
-                        details={
-                            "field": "execution_id",
-                            "attested": attested_execution_id,
-                            "response": response_execution_id,
-                        },
-                    )
+        # Verify execution_id (Req 10.10, 10.11) — read from the signed envelope,
+        # which stays inline (it is not part of claims_raw).
+        user_data_raw = payload_doc.get("user_data")
+        user_data_str = (
+            user_data_raw.decode("utf-8") if isinstance(user_data_raw, bytes) else str(user_data_raw)
+        )
+        envelope = json.loads(user_data_str)
+        attested_execution_id = envelope.get("execution_id")
+        response_execution_id = decrypted.get("execution_id")
+        if attested_execution_id != response_execution_id:
+            raise CallerError(
+                message=(
+                    f"Execution-acceptance attestation binding failed: "
+                    f"attested 'execution_id' ({attested_execution_id!r}) "
+                    f"does not match response body 'execution_id' ({response_execution_id!r})"
+                ),
+                phase="execute",
+                details={
+                    "field": "execution_id",
+                    "attested": attested_execution_id,
+                    "response": response_execution_id,
+                },
+            )
 
         # Save execution acceptance attestation artifact
         if self._artifact_collector is not None:
@@ -755,16 +766,27 @@ class RemoteExecutorCaller:
                 # Final-poll output attestation validation
                 output_attestation_b64 = data.get("output_attestation_document")
                 if output_attestation_b64:
-                    # Attestation present: validate it
+                    # Attestation present: validate it. claims_raw rides alongside
+                    # the attestation in the final complete=true response body.
+                    claims_raw = data.get("claims_raw")
                     self.validate_output_attestation(
-                        output_attestation_b64, stdout, stderr, exit_code,
+                        output_attestation_b64, claims_raw, stdout, stderr, exit_code,
                         expected_nonce=nonce,
                     )
 
-                    # Save output integrity attestation artifact
+                    # Save output integrity attestation artifact — same canonical
+                    # form used for verification (design D7), so stored provenance
+                    # matches what was attested.
                     if self._artifact_collector is not None:
-                        canonical_output = f"stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}"
-                        output_digest = hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
+                        canonical_output = json.dumps(
+                            {"stdout": stdout, "stderr": stderr, "exit_code": exit_code},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        output_digest = (
+                            attestation.SHA256_DIGEST_PREFIX
+                            + hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
+                        )
                         self._artifact_collector.save_output_integrity(
                             attestation_b64=output_attestation_b64,
                             nonce=nonce,

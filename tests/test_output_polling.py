@@ -82,6 +82,7 @@ class TestPollOutputValidatesAttestationOnlyOnFinal:
             "exit_code": 0,
             "complete": True,
             "output_attestation_document": "final_attestation_b64",
+            "claims_raw": "final_claims_raw_b64",
         }
 
         _setup_encryption(caller, [intermediate_response, final_response])
@@ -100,6 +101,7 @@ class TestPollOutputValidatesAttestationOnlyOnFinal:
         # It should be called with the FINAL attestation, not the intermediate one
         mock_validate.assert_called_once_with(
             "final_attestation_b64",
+            "final_claims_raw_b64",
             "building...\ndone!\n",
             "",
             0,

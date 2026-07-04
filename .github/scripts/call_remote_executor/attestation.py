@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 # Prevents resource exhaustion from oversized server-supplied blobs (Req 4A.8).
 MAX_ATTESTATION_B64_SIZE = 1_000_000  # 1 MB
 
+# Claims-digest binding version pins. Mirror the server's ENVELOPE_VERSION and
+# CLAIMS_SCHEMA_VERSION constants (attestation-claims-digest). Scalar, not a
+# set/range: a genuine format transition is a deliberate one-line bump, not a
+# membership tweak — no dual-format support (design D5, resolved OQ).
+ACCEPTED_ENVELOPE_VERSION = 1
+ACCEPTED_CLAIMS_SCHEMA_MAJOR = 1
+SHA256_DIGEST_PREFIX = "sha256:"
+
 EXPECTED_ATTESTATION_FIELDS = [
     "module_id",
     "digest",
@@ -218,6 +226,134 @@ def verify_nonce(payload_doc: dict, expected_nonce: str, phase: str) -> None:
         )
 
 
+def _verify_claims_binding(payload_doc: dict, claims_raw: str | None, phase: str) -> dict:
+    """Verify the integrity binding of claims_raw against the signed envelope digest.
+
+    payload_doc MUST already be COSE-verified (design D2: this runs strictly
+    downstream of signature/PKI/PCR/nonce checks). Reads the {v, claims_digest,
+    timestamp, execution_id} envelope from the trusted user_data, rejects an
+    unknown envelope version, base64-decodes claims_raw, verifies
+    sha256(decode(claims_raw)) == claims_digest, parses the claims JSON, and
+    rejects an unknown schema_version MAJOR.
+
+    Does NOT check which claim fields are present within claims — presence is
+    per-phase (design D4/D6) and lives in the phase-specific validators.
+
+    Returns the parsed claims dict. Raises CallerError (fail closed) on any
+    missing preimage, decode failure, digest mismatch, or version rejection.
+    """
+    if not claims_raw:
+        raise CallerError(
+            message=(
+                f"claims_raw is missing for {phase}: cannot verify the claims-digest "
+                f"integrity binding (absence is treated as tampering, not optionality)"
+            ),
+            phase=phase,
+        )
+
+    user_data_raw = payload_doc.get("user_data")
+    if user_data_raw is None:
+        raise CallerError(
+            message=f"Attestation document missing user_data envelope for {phase}",
+            phase=phase,
+        )
+    user_data_str = (
+        user_data_raw.decode("utf-8") if isinstance(user_data_raw, bytes) else str(user_data_raw)
+    )
+    try:
+        envelope = json.loads(user_data_str)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise CallerError(
+            message=f"Failed to parse user_data envelope for {phase}: {exc}",
+            phase=phase,
+            details={"user_data": user_data_str, "error": str(exc)},
+        )
+
+    envelope_version = envelope.get("v")
+    if envelope_version != ACCEPTED_ENVELOPE_VERSION:
+        raise CallerError(
+            message=(
+                f"Unknown envelope version for {phase}: expected "
+                f"{ACCEPTED_ENVELOPE_VERSION}, got {envelope_version!r}"
+            ),
+            phase=phase,
+            details={"expected": ACCEPTED_ENVELOPE_VERSION, "actual": envelope_version},
+        )
+
+    claims_digest = envelope.get("claims_digest")
+    if not isinstance(claims_digest, str) or not claims_digest.startswith(SHA256_DIGEST_PREFIX):
+        raise CallerError(
+            message=(
+                f"claims_digest missing or uses an unsupported algorithm prefix for "
+                f"{phase}: {claims_digest!r}"
+            ),
+            phase=phase,
+            details={"claims_digest": claims_digest},
+        )
+
+    try:
+        decoded_claims = base64.b64decode(claims_raw, validate=True)
+    except Exception as exc:
+        raise CallerError(
+            message=f"Failed to base64-decode claims_raw for {phase}: {exc}",
+            phase=phase,
+            details={"error": str(exc)},
+        )
+
+    computed_digest = SHA256_DIGEST_PREFIX + hashlib.sha256(decoded_claims).hexdigest()
+    if computed_digest != claims_digest:
+        raise CallerError(
+            message=f"Claims integrity binding failed for {phase}: digest mismatch",
+            phase=phase,
+            details={"computed": computed_digest, "attested": claims_digest},
+        )
+
+    try:
+        claims = json.loads(decoded_claims)
+    except json.JSONDecodeError as exc:
+        raise CallerError(
+            message=f"Failed to parse claims JSON for {phase}: {exc}",
+            phase=phase,
+            details={"error": str(exc)},
+        )
+    if not isinstance(claims, dict):
+        raise CallerError(
+            message=f"Claims document for {phase} is not a JSON object, got {type(claims).__name__}",
+            phase=phase,
+            details={"type": type(claims).__name__},
+        )
+
+    schema_version = claims.get("schema_version")
+    if not isinstance(schema_version, str) or "." not in schema_version:
+        raise CallerError(
+            message=f"Claims schema_version missing or malformed for {phase}: {schema_version!r}",
+            phase=phase,
+            details={"schema_version": schema_version},
+        )
+    try:
+        major = int(schema_version.split(".", 1)[0])
+    except ValueError:
+        raise CallerError(
+            message=(
+                f"Claims schema_version MAJOR is not an integer for {phase}: "
+                f"{schema_version!r}"
+            ),
+            phase=phase,
+            details={"schema_version": schema_version},
+        )
+    if major != ACCEPTED_CLAIMS_SCHEMA_MAJOR:
+        raise CallerError(
+            message=(
+                f"Unknown claims schema_version MAJOR for {phase}: expected "
+                f"{ACCEPTED_CLAIMS_SCHEMA_MAJOR}, got {major} (schema_version={schema_version!r})"
+            ),
+            phase=phase,
+            details={"expected_major": ACCEPTED_CLAIMS_SCHEMA_MAJOR, "schema_version": schema_version},
+        )
+
+    return claims
+
+
 def validate_attestation(
     attestation_b64: str,
     root_cert_pem: str,
@@ -316,8 +452,54 @@ def validate_attestation(
     return payload_doc
 
 
+# Claim fields the execution-acceptance phase requires within the accepted claims
+# schema_version MAJOR (design D4/D6). Every one is either sent by the caller or
+# independently recomputed, so an absent field is tampering, not legitimate
+# evolution — the version gate in _verify_claims_binding is what makes that safe.
+EXECUTION_CLAIMS_REQUIRED_FIELDS = (
+    "repository_url",
+    "commit_hash",
+    "script_path",
+    "script_env_hash",
+)
+
+
+def validate_execution_attestation(
+    attestation_b64: str,
+    claims_raw: str | None,
+    root_cert_pem: str,
+    expected_pcrs: dict[int, str] | None,
+    expected_nonce: str | None = None,
+) -> tuple[dict, dict]:
+    """Validate the execution-acceptance attestation and its claims-digest binding.
+
+    Composes the existing bare COSE verifier (validate_attestation — no new or
+    duplicated COSE code, design D3) with the claims integrity binding and
+    version gate, then enforces the execution-phase mandatory field set
+    (design D4/D6). Used by /execute.
+
+    Returns (payload_doc, claims) — the trusted attestation payload and the
+    verified claims dict, from which request-binding fields must be read
+    (never from raw user_data).
+    Raises CallerError on any COSE, binding, version, or presence failure.
+    """
+    payload_doc = validate_attestation(attestation_b64, root_cert_pem, expected_pcrs, expected_nonce)
+    claims = _verify_claims_binding(payload_doc, claims_raw, phase="execute")
+
+    missing = [f for f in EXECUTION_CLAIMS_REQUIRED_FIELDS if f not in claims]
+    if missing:
+        raise CallerError(
+            message=f"Execution claims missing required fields: {missing}",
+            phase="execute",
+            details={"missing_fields": missing},
+        )
+
+    return payload_doc, claims
+
+
 def validate_output_attestation(
     output_attestation_b64: str,
+    claims_raw: str | None,
     stdout: str,
     stderr: str,
     exit_code: int,
@@ -325,13 +507,18 @@ def validate_output_attestation(
     expected_pcrs: dict[int, str] | None,
     expected_nonce: str | None = None,
 ) -> bool:
-    """Decode output attestation CBOR, extract output_digest from user_data JSON.
+    """Decode output attestation CBOR, verify the claims-digest binding, check output_digest.
 
-    The user_data field contains a JSON object {"output_digest": "<hex>", "execution_id": "<uuid>"}.
-    Extracts the output_digest, computes SHA-256 of canonical output format, and compares digests.
-    Falls back to treating user_data as raw hex digest for backward compatibility.
+    Keeps its own inline COSE steps (pre-existing duplication with
+    validate_attestation, left as-is — Non-Goal). After COSE verification,
+    runs the shared claims integrity binding + version gate
+    (_verify_claims_binding) and requires only output_digest from the output
+    claims (design D6 — the four execution fields are legitimately absent here
+    and MUST NOT be required). Recomputes output_digest over the canonical
+    JSON object {"stdout", "stderr", "exit_code"} (sort_keys, compact
+    separators, sha256:-prefixed) and compares to the attested value.
     Returns True if match.
-    Raises CallerError on decode/parse failures or digest mismatch.
+    Raises CallerError on decode/parse/binding/version failures or digest mismatch.
     """
     # Enforce maximum size before decoding to prevent resource exhaustion (Req 4A.8)
     if len(output_attestation_b64) > MAX_ATTESTATION_B64_SIZE:
@@ -444,30 +631,26 @@ def validate_output_attestation(
             decoded = val.decode() if isinstance(val, bytes) else val
             logger.info("Attestation field %s: %s", field, decoded)
 
-    # Extract user_data from verified payload (JSON containing output_digest)
-    user_data_raw = payload_doc.get("user_data")
-    if user_data_raw is None:
+    # Claims-digest integrity binding + version gate (design D2/D5), then the
+    # output-phase mandatory set: only output_digest is required (design D6) —
+    # the four execution fields are legitimately absent from output claims.
+    claims = _verify_claims_binding(payload_doc, claims_raw, phase="output_attestation")
+
+    if "output_digest" not in claims:
         raise CallerError(
-            message="Output attestation document missing user_data field",
+            message="Output claims missing required field: output_digest",
             phase="output_attestation",
         )
+    attestation_digest = claims["output_digest"]
 
-    if isinstance(user_data_raw, bytes):
-        user_data_str = user_data_raw.decode("utf-8")
-    else:
-        user_data_str = str(user_data_raw)
-
-    # user_data is a JSON object: {"output_digest": "<hex>", "execution_id": "..."}
-    try:
-        user_data_json = json.loads(user_data_str)
-        attestation_digest = user_data_json["output_digest"]
-    except (json.JSONDecodeError, KeyError, TypeError):
-        # Fallback: treat as raw hex digest for backward compatibility
-        attestation_digest = user_data_str
-
-    # Reconstruct canonical output and compute SHA-256 hex digest
-    canonical_output = f"stdout:{stdout}\nstderr:{stderr}\nexit_code:{exit_code}"
-    computed_digest = hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
+    # Recompute over the canonical JSON object (design D7) — replaces the
+    # retired delimiter-glued stdout:...\nstderr:...\nexit_code:... form.
+    canonical_output = json.dumps(
+        {"stdout": stdout, "stderr": stderr, "exit_code": exit_code},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    computed_digest = SHA256_DIGEST_PREFIX + hashlib.sha256(canonical_output.encode("utf-8")).hexdigest()
 
     if computed_digest != attestation_digest:
         raise CallerError(

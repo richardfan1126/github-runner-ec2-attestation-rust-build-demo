@@ -3,6 +3,7 @@
 Validates: Requirements 2.4, 2.5, 3.4, 4.4, 4.7, 4.8, 5.2, 10.6, 10.7, 10.8
 """
 
+import base64
 import hashlib
 import json
 import sys
@@ -237,17 +238,30 @@ class TestScriptEnvHashMismatchRaises:
         mock_encryption.encrypt_payload = MagicMock(return_value="encrypted_blob")
         mock_encryption.client_public_key_bytes = b"fake_public_key"
 
-        # The attested user_data contains a WRONG script_env_hash
+        # The attested claims_raw contains a WRONG script_env_hash
         wrong_hash = "0" * 64
-        attested_user_data = json.dumps({
+        claims = {
+            "schema_version": "1.0",
             "repository_url": "https://github.com/owner/repo",
             "commit_hash": "abc123",
             "script_path": "scripts/build.sh",
             "script_env_hash": wrong_hash,
-        })
+        }
+        claims_json = json.dumps(claims).encode("utf-8")
+        claims_raw = base64.b64encode(claims_json).decode("ascii")
+        claims_digest = "sha256:" + hashlib.sha256(claims_json).hexdigest()
+        envelope = {
+            "v": 1,
+            "claims_digest": claims_digest,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "execution_id": "exec-123",
+        }
+        payload_doc = {"user_data": json.dumps(envelope).encode("utf-8")}
+
         mock_encryption.decrypt_response = MagicMock(return_value={
             "execution_id": "exec-123",
             "attestation_document": "fake_attestation_b64",
+            "claims_raw": claims_raw,
             "status": "accepted",
         })
         caller._encryption = mock_encryption
@@ -258,13 +272,10 @@ class TestScriptEnvHashMismatchRaises:
         mock_response.status_code = 200
         mock_response.json.return_value = {"encrypted_response": "fake_encrypted"}
 
-        # Mock validate_attestation to return a payload with user_data containing wrong hash
-        mock_payload = {"user_data": attested_user_data}
-
         script_env = {"GITHUB_TOKEN": "ghs_abc123", "GITHUB_REPOSITORY": "owner/repo"}
 
         with patch.object(caller, "_request_with_retry", return_value=mock_response), \
-             patch.object(caller, "validate_attestation", return_value=mock_payload):
+             patch("call_remote_executor.attestation.validate_attestation", return_value=payload_doc):
             with pytest.raises(CallerError, match="script_env_hash"):
                 caller.execute(
                     repository_url="https://github.com/owner/repo",
