@@ -15,7 +15,7 @@
 
 - [ ] 3.1 Add the `claims_raw` parameter to `validate_output_attestation(att_b64, claims_raw, stdout, stderr, exit_code, ...)`; keep its own inline COSE steps (pre-existing duplication left as-is per Non-Goal), then call `_verify_claims_binding`
 - [ ] 3.2 Enforce the **output-phase mandatory set** (D6, resolved OQ1): require **only** `output_digest`; MUST NOT require the four execution fields — they are legitimately absent from output claims, and requiring them would false-reject every output attestation
-- [ ] 3.3 Recompute `output_digest` over canonical JSON `json.dumps({"stdout":..., "stderr":..., "exit_code":...}, sort_keys=True, separators=(',',':'))` with `exit_code` a JSON number, `SHA256_DIGEST_PREFIX`-prefixed; compare to the attested `output_digest` (design D7). Remove the retired glued-string `stdout:...\nstderr:...\nexit_code:...` reconstruction and the raw-`user_data` fallback
+- [ ] 3.3 Recompute `output_digest` over canonical JSON `json.dumps({"stdout":..., "stderr":..., "exit_code":...}, sort_keys=True, separators=(',',':'))` with `exit_code` a JSON number, `SHA256_DIGEST_PREFIX`-prefixed; compare to the attested `output_digest` (design D7). Feed the `stdout`/`stderr`/`exit_code` **verbatim** from the **final `complete: true` response body** — do not parse/normalise their content, and do not reconstruct from a caller-side accumulator stitched across polls (the server hashes the full accumulated streams; intermediate `stdout_offset`/`stderr_offset` chunks are logging-only and would hash short). Remove the retired glued-string `stdout:...\nstderr:...\nexit_code:...` reconstruction and the raw-`user_data` fallback
 
 ## 4. Caller request binding (`caller.py`)
 
@@ -32,7 +32,17 @@
 
 ## 6. Regression tests
 
-- [ ] 6.1 Build a positively-constructed execution `claims_raw` fixture helper: real JSON claims → base64 → recompute `claims_digest` → embed in a freshly signed `user_data` envelope, so tests exercise the **presence/binding** layers, not the integrity layer (design: a claims-less server double is rejected one layer too early and proves the wrong thing)
+> **Test seam (design D3 / Thread F):** the binding layer consumes an *already-trusted*
+> `payload_doc` (what `validate_attestation` returns post-COSE), so it needs **no signing
+> key and no test CA** — none exists in this repo and none is introduced. Two seams: call
+> `_verify_claims_binding(payload_doc, claims_raw)` as a **unit** (hand-built `payload_doc`)
+> for integrity / version-gate / missing-`claims_raw` (6.5, 6.6); or call a **phase
+> validator** with `validate_attestation` **patched to return the fixture `payload_doc`**
+> for presence / request-binding (6.2, 6.3, 6.7), since those checks live in the phase
+> functions, not the shared helper. This extends the repo's existing "patch the validator"
+> convention (`test_output_polling.py`) one layer deeper — patch COSE, keep the binding real.
+
+- [ ] 6.1 Build a positively-constructed execution fixture helper returning a **trusted `payload_doc`** (as `validate_attestation` would post-COSE — a plain dict with a `user_data` envelope; there is **no** separate envelope signing key, so nothing is literally "signed" in the fixture — trust is conferred by the patched validator, Thread F) plus a **re-bound `claims_raw`**: real JSON claims → base64 → `claims_digest = sha256(decode(claims_raw))` written into the envelope. Integrity MUST pass so tests 6.2/6.3 exercise the **presence/binding** layers, not the integrity layer (a claims-less or mis-bound fixture is rejected one layer too early and proves the wrong thing)
 - [ ] 6.2 **Test A** — a *wrong* `script_env_hash` in a well-formed, correctly-bound `claims_raw` is rejected by `validate_execution_attestation` + request binding
 - [ ] 6.3 **Test B** — an *absent* `script_env_hash` in an otherwise well-formed, correctly-bound `claims_raw` is rejected (the fail-closed teeth for the removed None-guard; a tamper test alone cannot catch a surviving guard)
 - [ ] 6.4 **Test C** — an `/attest` attestation carrying **no** `claims_raw` still validates via `validate_attestation` and is **not** subjected to the claims binding

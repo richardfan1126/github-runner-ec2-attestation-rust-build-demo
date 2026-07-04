@@ -140,6 +140,25 @@ can omit. The caller extracts `claims_raw` from the decrypted response body (a s
 of `attestation_document`) and threads it in, keeping the verifier decoupled from the
 response schema.
 
+**The composition seam doubles as the test seam (Thread F).** Because
+`_verify_claims_binding` consumes the *already-trusted* `payload_doc` that
+`validate_attestation` returns post-COSE, the binding is unit-testable **without a
+signing key or a test CA** — construct a `payload_doc` dict directly (its `user_data`
+carries the envelope), pair it with a positively re-bound `claims_raw`, and call the
+helper; or drive a phase validator with `validate_attestation` **patched** to return the
+fixture doc when the presence/request-binding path is under test. This is the *same*
+reason we composed rather than duplicated COSE: the seam that keeps this change to "no
+new COSE code" is the seam the tests inject at. It extends the suite's existing
+"patch the validator" convention (`tests/test_output_polling.py` patches
+`validate_output_attestation` wholesale) one layer deeper — patch COSE, keep the binding
+real. Note there is **no separate envelope signing key**: the `{v, claims_digest,
+timestamp, execution_id}` envelope is plain JSON inside `user_data`, trusted only because
+COSE covers the whole `payload_doc`; in a fixture, that trust is conferred by the patched
+verifier, so "signed envelope" language must not imply a key the tests have to forge.
+End-to-end COSE / PKI / PCR coverage is explicitly **out of scope** — that path is
+unchanged by this change and is already untested-by-construction in this suite; adding a
+real cert-chain fixture would be a separate, larger effort.
+
 **Alternative rejected:** overload `validate_attestation` to always bind and return
 `(payload_doc, claims)`. This was the initial interface sketch; it breaks `/attest`,
 which has no `claims_raw`. Making `claims_raw` an *optional* parameter instead would
@@ -243,6 +262,20 @@ minimum-posture policy hook).
 `poll_output` (`caller.py` ~766) is updated to the identical canonical form so stored
 provenance matches what was verified. This mirrors the server's D11 and closes the same
 in-band-delimiter collision hazard on the verify side.
+
+The preimage is never transmitted: the server sends `stdout`, `stderr`, `exit_code` as
+three separate decrypted JSON fields (`server.py` ~1147-1152), and only the resulting
+`output_digest` rides inside the bound claims — so the caller cannot "hash the bytes it
+received" as a single blob and MUST reconstruct the canonical object. Two rules keep that
+reconstruction byte-exact: (1) the caller re-dumps the received `stdout`/`stderr`/`exit_code`
+**verbatim** — treating them as opaque values, never parsing or normalising their content —
+so that same-language (`json.dumps` on both sides) + same-params (pinned above) is
+deterministically byte-identical (the cross-language canonicalisation-parity hazard does not
+arise); and (2) it hashes the three fields taken **straight from the final `complete: true`
+response body** — the server hashed the *full accumulated* `output_data.stdout`/`stderr`, so
+the caller MUST NOT recompute from an accumulator it stitched across incremental polls (the
+intermediate `stdout_offset`/`stderr_offset` chunks are for logging only and would hash to a
+different, shorter preimage).
 
 ## Risks / Trade-offs
 
