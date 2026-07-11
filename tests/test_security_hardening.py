@@ -3,6 +3,8 @@
 Validates: Requirements 10.10, 10.11, 10.12, 10.14
 """
 
+import base64
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -15,8 +17,25 @@ _scripts_dir = str(Path(__file__).resolve().parent.parent / ".github" / "scripts
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
 
+from call_remote_executor.attestation import SHA256_DIGEST_PREFIX
 from call_remote_executor.caller import RemoteExecutorCaller
 from call_remote_executor.errors import CallerError
+
+
+def _make_claims_fixture(claims: dict, *, execution_id: str) -> tuple[dict, str]:
+    """Build a trusted payload_doc (as validate_attestation would return post-COSE)
+    plus a re-bound claims_raw, matching the claims-digest wire format."""
+    claims_json = json.dumps(claims).encode("utf-8")
+    claims_raw = base64.b64encode(claims_json).decode("ascii")
+    claims_digest = SHA256_DIGEST_PREFIX + hashlib.sha256(claims_json).hexdigest()
+    envelope = {
+        "v": 1,
+        "claims_digest": claims_digest,
+        "timestamp": "2026-01-01T00:00:00Z",
+        "execution_id": execution_id,
+    }
+    payload_doc = {"user_data": json.dumps(envelope).encode("utf-8")}
+    return payload_doc, claims_raw
 
 
 def _make_caller():
@@ -59,17 +78,19 @@ class TestExecutionIdBindingVerified:
         caller = _make_caller()
 
         execution_id = "exec-abc-123"
-        attested_user_data = json.dumps({
+        claims = {
+            "schema_version": "1.0",
             "repository_url": "https://github.com/owner/repo",
             "commit_hash": "abc123",
             "script_path": "scripts/build.sh",
             "script_env_hash": caller._compute_script_env_hash(None),
-            "execution_id": execution_id,
-        })
+        }
+        payload_doc, claims_raw = _make_claims_fixture(claims, execution_id=execution_id)
 
         _setup_encryption(caller, {
             "execution_id": execution_id,
             "attestation_document": "fake_attestation_b64",
+            "claims_raw": claims_raw,
             "status": "accepted",
         })
 
@@ -77,10 +98,8 @@ class TestExecutionIdBindingVerified:
         mock_response.status_code = 200
         mock_response.json.return_value = {"encrypted_response": "fake_encrypted"}
 
-        mock_payload = {"user_data": attested_user_data}
-
         with patch.object(caller, "_request_with_retry", return_value=mock_response), \
-             patch.object(caller, "validate_attestation", return_value=mock_payload):
+             patch("call_remote_executor.attestation.validate_attestation", return_value=payload_doc):
             result = caller.execute(
                 repository_url="https://github.com/owner/repo",
                 commit_hash="abc123",
@@ -104,17 +123,19 @@ class TestExecutionIdMismatchRaises:
         """
         caller = _make_caller()
 
-        attested_user_data = json.dumps({
+        claims = {
+            "schema_version": "1.0",
             "repository_url": "https://github.com/owner/repo",
             "commit_hash": "abc123",
             "script_path": "scripts/build.sh",
             "script_env_hash": caller._compute_script_env_hash(None),
-            "execution_id": "exec-attested-999",
-        })
+        }
+        payload_doc, claims_raw = _make_claims_fixture(claims, execution_id="exec-attested-999")
 
         _setup_encryption(caller, {
             "execution_id": "exec-response-111",
             "attestation_document": "fake_attestation_b64",
+            "claims_raw": claims_raw,
             "status": "accepted",
         })
 
@@ -122,10 +143,8 @@ class TestExecutionIdMismatchRaises:
         mock_response.status_code = 200
         mock_response.json.return_value = {"encrypted_response": "fake_encrypted"}
 
-        mock_payload = {"user_data": attested_user_data}
-
         with patch.object(caller, "_request_with_retry", return_value=mock_response), \
-             patch.object(caller, "validate_attestation", return_value=mock_payload):
+             patch("call_remote_executor.attestation.validate_attestation", return_value=payload_doc):
             with pytest.raises(CallerError, match="execution_id"):
                 caller.execute(
                     repository_url="https://github.com/owner/repo",

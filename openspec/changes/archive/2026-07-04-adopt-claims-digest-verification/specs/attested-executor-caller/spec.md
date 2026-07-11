@@ -1,33 +1,4 @@
-# attested-executor-caller Specification
-
-## Purpose
-
-Define the Python caller (`call_remote_executor`) that communicates with the
-Remote Executor over its attested channel and verifies the attestation chain. The
-caller forwards the environment the build needs, proves the execution-acceptance
-attestation binds to the exact request it sent, surfaces server-side errors that
-arrive as encrypted envelopes, and obtains and verifies an output-integrity
-attestation after the build completes.
-
-This capability is invoked by [[attested-build-workflow]] and forwards the
-environment consumed by the build in [[hardened-build-environment]].
-
-## Requirements
-
-### Requirement: Script Environment Forwarding
-
-The caller SHALL forward caller-supplied environment variables into the execution
-container via the encrypted `/execute` payload.
-
-#### Scenario: Env vars are collected and forwarded
-
-- **WHEN** the caller is invoked with one or more `--script-env KEY=VALUE` arguments
-- **THEN** it collects them into a `script_env` dictionary and includes that dictionary in the encrypted `/execute` payload alongside the existing fields (repository_url, commit_hash, script_path, github_token, oidc_token, nonce), with a non-empty `nonce` (the executor rejects missing/empty nonces with HTTP 400)
-
-#### Scenario: Build credentials are forwarded
-
-- **WHEN** the workflow invokes the caller
-- **THEN** it passes `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, and the commit SHA via `--script-env` so they reach the execution container for GHCR authentication and binary upload
+## ADDED Requirements
 
 ### Requirement: Claims-Digest Integrity Binding and Version Gate
 
@@ -90,6 +61,8 @@ with signature verification, strictly downstream of it.
   claims integrity binding (which would fail closed on the absent `claims_raw` and
   break server-identity verification)
 
+## MODIFIED Requirements
+
 ### Requirement: Execution-Acceptance Attestation Verification
 
 The caller SHALL verify that the execution-acceptance attestation binds to the
@@ -128,21 +101,6 @@ absent binding field is tampering and MUST fail closed (no silent skip).
 
 - **WHEN** the execution-acceptance attestation's signed `user_data` envelope contains an `execution_id`
 - **THEN** the caller verifies it matches the `execution_id` in the decrypted `/execute` response body, raising a CallerError describing the mismatch otherwise
-
-### Requirement: Encrypted Error Envelope Handling
-
-The caller SHALL detect and surface server-side application errors returned as
-encrypted envelopes rather than misinterpreting them as successful responses.
-
-#### Scenario: Encrypted error envelope on /execute is surfaced
-
-- **WHEN** the executor returns HTTP 200 on `/execute` whose decrypted payload contains an `error` field
-- **THEN** the caller treats it as an encrypted error envelope and raises a CallerError with the `error` message and `error_code`, rather than treating it as a successful execution
-
-#### Scenario: Pre- and post-decryption errors are distinguished
-
-- **WHEN** an error occurs
-- **THEN** the caller distinguishes pre-decryption plaintext HTTP errors (400, 413, 429, 500) from post-decryption encrypted envelopes (HTTP 200 with an `error` field) and handles both, including envelopes detected while polling `/execution/{id}/output`
 
 ### Requirement: Output Polling and Output-Integrity Attestation
 
